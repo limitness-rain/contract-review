@@ -467,8 +467,9 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
       const selected = clauses.get(contract.id);
       if (!selected.has(f[clauseKey])) selected.set(f[clauseKey],row.id);
     } else {
-      requirePackage(f[clauseKey]==="" && !f[categoryKey] && !f[evidenceKey] && f[relevantKey]==="否",
-        where+"缺少主条款原文。仅独立的全文缺失记录可留空主条款、条款类型和关键证据，相关性须为「否」。");
+      requirePackage(f[clauseKey]==="" && !f[categoryKey] && f[relevantKey]==="否" &&
+        (!f[evidenceKey].trim() || packageCardType(f)==="no-attention"),
+        where+"缺少主条款原文。合同级标注的相关性须为「否」，条款类型留空；有证据的未触发记录显示为「无需关注」。");
       row.scope = "full_missing";
     }
   }
@@ -500,11 +501,14 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
     handoff:{action:"网页生成初始包",source:excelFiles.map(file=>file.name).join("、"),at:new Date().toISOString()}
   };
   const zip = await exportReviewPackage({contents},manifest,[]);
-  const count = (related,hit)=>rows.filter(({fields})=>fields[relevantKey]===related && fields[triggerKey]===hit).length;
-  const fullMissing = rows.filter(row=>row.scope==="full_missing" && row.fields[triggerKey]==="是").length;
+  const counts = new Map();
+  for (const {fields} of rows) {
+    const type = packageCardType(fields);
+    counts.set(type,(counts.get(type) || 0)+1);
+  }
   const shared = pairs.flatMap(pair=>pair.shared);
   const pairedRows = new Set(shared.map(([,id])=>id));
-  const sharedReviews = rows.filter(row=>pairedRows.has(row.id) && row.fields[relevantKey]==="是").length;
-  return {zip,title,total:rows.length,hit:count("是","是"),clear:count("是","否"),fullMissing,sharedReviews,
+  const sharedReviews = rows.filter(row=>pairedRows.has(row.id) && packageCardType(row.fields)).length;
+  return {zip,title,total:rows.length,counts,sharedReviews,
     pairedContracts:pairs.length};
 }

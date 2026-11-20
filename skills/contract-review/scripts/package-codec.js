@@ -25,6 +25,22 @@ const samePackageValue = (left,right)=>JSON.stringify(left ?? null)===JSON.strin
 const hexHash = async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",bytes)),byte=>byte.toString(16).padStart(2,"0")).join("");
 const requirePackage = (condition,message)=>{ if (!condition) throw new Error(message); };
 
+function packageCardType(fields) {
+  const relevant = fields?.["条款与规则是否相关"];
+  const trigger = fields?.["是否触发该风险"];
+  const evidence = fields?.["风险判断关键证据"];
+  if (relevant==="是" && trigger==="是") return "related-hit";
+  if (relevant==="是" && trigger==="否") return "related-clear";
+  if (relevant==="否" && trigger==="是") return "no-clause";
+  if (relevant==="否" && trigger==="否" && typeof evidence==="string" && evidence.trim()) return "no-attention";
+  return "";
+}
+
+function packageUntriggeredCard(fields) {
+  const type = packageCardType(fields);
+  return type==="related-clear" || type==="no-attention";
+}
+
 function missingPackageRuleFields(rows) {
   const missing = new Map();
   for (const row of rows) {

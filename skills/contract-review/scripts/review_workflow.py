@@ -242,8 +242,9 @@ def annotation_rows(paths, contracts, rule_keys):
             if not rule:
                 raise ValueError(f"{path.name} {rid} 无法唯一对应正式规则：{fields[review.RISK]}／{fields[review.STANCE]}")
             scope = "slice" if fields[review.CLAUSE].strip() else "full_missing"
-            if scope == "full_missing" and (fields[review.REL] != "否" or fields[review.CLAUSE_TYPE] or fields[review.EVIDENCE]):
-                raise ValueError(f"{path.name} {rid} 不能作为无主条款的全文缺失记录")
+            if scope == "full_missing" and (fields[review.REL] != "否" or fields[review.CLAUSE_TYPE]
+                    or (fields[review.EVIDENCE].strip() and not review.no_attention(fields))):
+                raise ValueError(f"{path.name} {rid} 不能作为无主条款的合同级记录")
             rows.append({"id":rid, "contract_id":contract["id"], "rule_id":rule["id"],
                          "fields":fields, "scope":scope})
     if not rows:

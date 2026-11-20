@@ -47,6 +47,7 @@ body:has(.package-start) { min-height:100vh; background:radial-gradient(ellipse 
 .package-card-summary { grid-template-columns:minmax(0,32%) minmax(0,1fr); font-size:13px; }
 .package-card-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; margin-left:auto; }
 .badge.package-related-clear { color:#195b64; background:#e2f3f2; }
+.badge.package-no-attention { color:#43515a; background:#e9eef1; }
 .badge.package-change-edited { color:#194878; background:#eaf3ff; }
 .badge.package-change-confirmed { color:#315841; background:#e7f2e7; }
 .badge.package-change-removed { color:#8a2a32; background:#f9e8e8; }
@@ -315,10 +316,10 @@ const wasRisk = row => rowVersions(row).some(fields=>fields?.[riskField]==="是"
   (Array.isArray(row.review_history) ? row.review_history : []).some(event=>event?.before?.[riskField]==="是");
 const requiresRiskReview = row => row.review_required === true || wasRisk(row);
 const relatedUntriggered = fields => fields?.[keyRelevant]==="是" && fields?.[riskField]==="否";
-const requiresRelatedReview = row => rowVersions(row).some(relatedUntriggered) ||
-  (packageMode && Array.isArray(row.review_history) && row.review_history.some(event=>relatedUntriggered(event?.before)));
+const requiresUntriggeredReview = row => rowVersions(row).some(packageUntriggeredCard) ||
+  (Array.isArray(row.review_history) && row.review_history.some(event=>packageUntriggeredCard(event?.before)));
 const requiresReview = row => requiresRiskReview(row) ||
-  (packageMode && (model.stage!=="final" || model.review_related===true) && requiresRelatedReview(row));
+  (packageMode && (model.stage!=="final" || model.review_related===true) && requiresUntriggeredReview(row));
 const hasLawyerOpinion = row => typeof row.lawyer?.note === "string" && !!row.lawyer.note.trim();
 const isReviewed = row => model.stage === "student" ? !!row.student?.reviewed :
   !!row.lawyer?.reviewed && (packageMode || model.stage === "final" || hasLawyerOpinion(row));
@@ -815,9 +816,10 @@ function editPanel(row,article,options={}) {
       const isMissing = row.scope === "full_missing";
       const checkHints = {
         [keyRelevant]:isMissing ? "全文没有对应主条款时，相关性记录为“否”。" :
-          judgmentReadOnly ? "条款不相关时，使用「删除风险卡」。" : "看本切片是不是规则实际检查的对象。",
+          judgmentReadOnly ? "随卡片判断显示。「无需关注」记录的相关性为否。" : "看本切片是不是规则实际检查的对象。",
         [riskField]:judgmentReadOnly ? "请用卡片顶部按钮切换触发状态。" : "结合适用条件、触发条件与排除条件判断。",
-        [keyEvidence]:isMissing ? "全文无主条款时留空。" : "摘录主切片中支持风险判断的原文。相关但无风险时也要摘录能支持判断的原文。"
+        [keyEvidence]:isMissing ? "全文缺失风险的关键证据留空。「无需关注」可保留判断证据。" :
+          "摘录主切片中支持判断的原文。「无需关注」也保留证据。"
       };
       label.append(node("i",field),input);
       const hint = sourceReadOnly ? "从对应合同、专家规则或切片带出。" : checkHints[field] || fieldHints[field];
@@ -1712,7 +1714,7 @@ function launch() {
   const changeStatus = packageMode ? choose("change-status",[["","全部"],["changed","有改动"],["unchanged","未改动"]]) : null;
   changeStatus?.setAttribute("aria-label","改动状态");
   const scope = choose("scope",packageMode ?
-    [["review","全部类型"],["related-hit","相关触发"],["related-clear","相关未触发"],["no-clause","全文缺失风险"]] :
+    [["review","全部类型"],...packageCardLabels] :
     [["review","全部类型"],["slice","触发风险"],["no-clause","缺失风险"]]);
   const reviewStatus = choose("review-status",[["","全部状态"],["unreviewed","未复核"],["reviewed","已复核"]]);
   scope.setAttribute("aria-label","风险类型");

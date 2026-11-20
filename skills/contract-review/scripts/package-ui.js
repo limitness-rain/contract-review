@@ -3,6 +3,10 @@
 let packageSession;
 let packageBusy = false;
 let packageViewMode = "flip";
+const packageCardLabels = new Map([
+  ["related-hit","相关触发"],["related-clear","相关未触发"],
+  ["no-clause","全文缺失风险"],["no-attention","无需关注"]
+]);
 const seenPackageHeads = new Map();
 const lawyerSections = new Map();
 const lawyerCards = new Map();
@@ -142,17 +146,18 @@ function initialPackageForm(usePackage) {
         status.textContent = "已取消生成初始包。";
         return;
       }
-      const {zip,title,total,hit,clear,fullMissing,pairedContracts,sharedReviews} = generated;
+      const {zip,title,total,counts,pairedContracts,sharedReviews} = generated;
       const filename = packageExportName(title,"待署名","初始包","交实习生");
-      const summary = "共 "+total+" 条标注 · 相关触发 "+hit+" 条 · 相关未触发 "+clear+" 条";
-      result.replaceChildren(node("strong","初始包已生成"),node("span",summary+(fullMissing?" · 全文缺失风险 "+fullMissing+" 条":""),"small"),
+      const summary = ["共 "+total+" 条标注", ...[...packageCardLabels].map(([type,label])=>
+        label+" "+(counts.get(type) || 0)+" 条")].join(" · ");
+      result.replaceChildren(node("strong","初始包已生成"),node("span",summary,"small"),
         button("下载初始 ZIP",async ()=>{
           const chosen = await choosePackageFilename(filename,".zip");
           if (chosen) downloadPackageFile(zip,chosen);
         },"primary"),
         button("用此初始包开始复核",()=>usePackage(new File([zip],filename+".zip",{type:"application/zip"}))));
       if (pairedContracts) result.insertBefore(node("span",
-        "已识别 "+pairedContracts+" 组双立场合同 · "+sharedReviews+" 对相关标注共用复核。","small"),result.children[2]);
+        "已识别 "+pairedContracts+" 组双立场合同 · "+sharedReviews+" 对标注共用复核。","small"),result.children[2]);
       status.textContent = "";
       result.hidden = false;
     } catch (error) {
@@ -1147,7 +1152,7 @@ function handoffMark(row,view,role) {
   const information = {fields,before,note,binding,judgmentChanged};
   if (judgmentChanged && latest.action==="restore") return {...information,label:"本轮恢复",tone:"edited"};
   if (removed || (priorRisk==="是" && nextRisk==="否" && !judgmentChanged)) return {...information,label:"本轮删除",tone:"removed"};
-  if ((priorRisk!=="是" && nextRisk==="是") || (before[keyRelevant]!=="是" && relatedUntriggered(after))) {
+  if ((priorRisk!=="是" && nextRisk==="是") || (!packageCardType(before) && packageUntriggeredCard(after))) {
     return {...information,label:"本轮补标",tone:"edited"};
   }
   if (fields.length || binding || judgmentChanged) return {...information,label:"本轮有改动",tone:"edited"};
@@ -1206,10 +1211,7 @@ function packageCardBadges(row,view,role,status) {
   return box;
 }
 function matchesPackageRiskFilter(row,scope) {
-  if (scope==="related-hit") return get(row,keyRelevant)==="是" && get(row,riskField)==="是";
-  if (scope==="related-clear") return relatedUntriggered(row.fields);
-  if (scope==="no-clause") return row.scope==="full_missing";
-  return true;
+  return scope==="review" || packageCardType(row.fields)===scope;
 }
 function showFinalPackageChange(row) {
   return model.stage==="final" && byId("change-status").value==="changed" && packageSession.changedRows.has(row.id);
@@ -1218,18 +1220,23 @@ function packageCardHidden(row,role,view={...row,...roleProjection(row,role)}) {
   if (showFinalPackageChange(row)) return false;
   const removal = roleRemoval(row,view,role);
   if (removal && (role==="student" ? model.stage!=="student" : model.stage==="lawyer")) return false;
-  const unrelated = item=>item.scope!=="full_missing" && get(item,keyRelevant)!=="是";
+  const unrelated = item=>item.scope!=="full_missing" && get(item,keyRelevant)!=="是" && !packageCardType(item.fields);
   return unrelated(row) || packageCurrentRemoval(row) || unrelated(view) || !!removal;
 }
 function packageJudgmentBadge(view,prefix="") {
-  if (view.scope!=="full_missing" && get(view,keyRelevant)!=="是") return null;
-  const trigger = get(view,riskField);
-  if (trigger==="是") return node("span",prefix+"相关触发","badge risk");
-  if (trigger==="否") return node("span",prefix+"相关未触发","badge package-related-clear");
+  const type = packageCardType(view.fields);
+  if (type) {
+    const tone = type==="no-attention" ? "package-no-attention" :
+      type==="related-clear" ? "package-related-clear" : "risk";
+    return node("span",prefix+packageCardLabels.get(type),"badge "+tone);
+  }
+  if (view.scope==="full_missing" && get(view,riskField)==="否") {
+    return node("span",prefix+"全文缺失未触发","badge package-related-clear");
+  }
   return null;
 }
 function packageReviewStatus(row,role) {
-  const missingLegacyConfirmation = model.stage==="final" && model.review_related!==true && requiresRelatedReview(row) && !requiresRiskReview(row);
+  const missingLegacyConfirmation = model.stage==="final" && model.review_related!==true && requiresUntriggeredReview(row) && !requiresRiskReview(row);
   const status = node("span",row[role]?.reviewed ? "已复核" : missingLegacyConfirmation ? "历史未确认" : "待复核","badge");
   status.dataset.reviewed = "";
   return status;
@@ -1261,7 +1268,7 @@ function shownPackageRows(role) {
     const section = packageSlot(view);
     if (section===undefined) return [];
     const removal = roleRemoval(row,view,role);
-    if (!pending && get(view,riskField)!=="是" && !relatedUntriggered(view.fields) &&
+    if (!pending && !packageCardType(view.fields) &&
         !requiresReview(row) && !removal && !awaitingHandoffConfirmation(row,role) && changeStatus!=="changed") return [];
     const desiredStance = packageStanceChoices.get(section) ?? stance;
     if (desiredStance && get(view,"立场")!==desiredStance) return [];
@@ -1384,7 +1391,7 @@ function openPackageCounterpart(row,role) {
 }
 function canRemovePackageRow(row) {
   return get(row,riskField)==="是" || (get(row,riskField)==="否" &&
-    (requiresRelatedReview(row) || (row.scope==="full_missing" && requiresRiskReview(row))));
+    (requiresUntriggeredReview(row) || (row.scope==="full_missing" && requiresRiskReview(row))));
 }
 function packageRowRemoved(row) {
   const latest = latestPackageJudgment(row);
@@ -1793,7 +1800,9 @@ function finalPackageIssues(project,requireOpinion=true) {
     const clauseText = normalize(get(row,keyClause));
     const section = row.section_id || (contractUnits ? [...contractUnits].findLast(([,text])=>text===clauseText)?.[0] : undefined);
     let scope = row.scope || (clauseText ? "slice" : "unlinked");
-    if (scope==="unlinked" && paths.get(groupKey)?.mode==="full_missing") scope="full_missing";
+    const type = packageCardType(fields);
+    if (scope==="unlinked" && (paths.get(groupKey)?.mode==="full_missing" ||
+        (!clauseText.trim() && (type==="no-clause" || type==="no-attention")))) scope="full_missing";
     const item = issueContext(row.contract_id,row.rule_id,section,scope,row);
     const problems = item.problems;
     const add = (field,reason,options={})=>{
@@ -1834,15 +1843,13 @@ function finalPackageIssues(project,requireOpinion=true) {
       add("关联条款属性","「"+attribute+"」不是有效属性。可选引用、例外、生效条件、定义来源或优先适用。",{editField:"关联条款属性"});
     }
     if (scope==="full_missing") {
-      for (const [field,value] of [[keyClause,clause],[keyEvidence,evidence],["条款类型",category]]) {
+      for (const [field,value] of [[keyClause,clause],[keyEvidence,type==="no-attention" ? "" : evidence.trim()],["条款类型",category]]) {
         if (value) add(field,"全文缺失记录的这个字段应留空。",{editField:field});
       }
       if (relevant!=="否") add(keyRelevant,"全文缺失记录没有主条款，相关性应为「否」。");
       if (row.section_id) add("条款定位","全文缺失记录应以整份合同为审查对象。");
     } else {
       if (!clause || contractUnits?.get(section)!==clause) problems.push(clauseMismatchIssue(row,contract,section));
-      if (relevant==="否" && trigger==="是") add(riskField,"不相关记录的触发结论应为「否」。");
-      if (relevant==="否" && evidence) add(keyEvidence,"不相关记录的关键证据应留空。",{editField:keyEvidence});
       if (relevant==="是" && trigger==="是" && !evidence) {
         add(keyEvidence,"这条标注已判为触发，需要从左侧对应条款摘录支持判断的原文。",{editField:keyEvidence});
       }

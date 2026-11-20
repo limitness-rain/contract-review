@@ -47,6 +47,7 @@ body:has(.package-start) { min-height:100vh; background:radial-gradient(ellipse 
 .package-card-summary { grid-template-columns:minmax(0,32%) minmax(0,1fr); font-size:13px; }
 .package-card-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; margin-left:auto; }
 .badge.package-related-clear { color:#195b64; background:#e2f3f2; }
+.badge.package-no-attention { color:#43515a; background:#e9eef1; }
 .badge.package-change-edited { color:#194878; background:#eaf3ff; }
 .badge.package-change-confirmed { color:#315841; background:#e7f2e7; }
 .badge.package-change-removed { color:#8a2a32; background:#f9e8e8; }
@@ -252,6 +253,22 @@ const unpackJSON = bytes=>JSON.parse(fromUtf8.decode(bytes));
 const samePackageValue = (left,right)=>JSON.stringify(left ?? null)===JSON.stringify(right ?? null);
 const hexHash = async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",bytes)),byte=>byte.toString(16).padStart(2,"0")).join("");
 const requirePackage = (condition,message)=>{ if (!condition) throw new Error(message); };
+
+function packageCardType(fields) {
+  const relevant = fields?.["条款与规则是否相关"];
+  const trigger = fields?.["是否触发该风险"];
+  const evidence = fields?.["风险判断关键证据"];
+  if (relevant==="是" && trigger==="是") return "related-hit";
+  if (relevant==="是" && trigger==="否") return "related-clear";
+  if (relevant==="否" && trigger==="是") return "no-clause";
+  if (relevant==="否" && trigger==="否" && typeof evidence==="string" && evidence.trim()) return "no-attention";
+  return "";
+}
+
+function packageUntriggeredCard(fields) {
+  const type = packageCardType(fields);
+  return type==="related-clear" || type==="no-attention";
+}
 
 function missingPackageRuleFields(rows) {
   const missing = new Map();
@@ -1034,8 +1051,9 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
       const selected = clauses.get(contract.id);
       if (!selected.has(f[clauseKey])) selected.set(f[clauseKey],row.id);
     } else {
-      requirePackage(f[clauseKey]==="" && !f[categoryKey] && !f[evidenceKey] && f[relevantKey]==="否",
-        where+"缺少主条款原文。仅独立的全文缺失记录可留空主条款、条款类型和关键证据，相关性须为「否」。");
+      requirePackage(f[clauseKey]==="" && !f[categoryKey] && f[relevantKey]==="否" &&
+        (!f[evidenceKey].trim() || packageCardType(f)==="no-attention"),
+        where+"缺少主条款原文。合同级标注的相关性须为「否」，条款类型留空；有证据的未触发记录显示为「无需关注」。");
       row.scope = "full_missing";
     }
   }
@@ -1067,12 +1085,15 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
     handoff:{action:"网页生成初始包",source:excelFiles.map(file=>file.name).join("、"),at:new Date().toISOString()}
   };
   const zip = await exportReviewPackage({contents},manifest,[]);
-  const count = (related,hit)=>rows.filter(({fields})=>fields[relevantKey]===related && fields[triggerKey]===hit).length;
-  const fullMissing = rows.filter(row=>row.scope==="full_missing" && row.fields[triggerKey]==="是").length;
+  const counts = new Map();
+  for (const {fields} of rows) {
+    const type = packageCardType(fields);
+    counts.set(type,(counts.get(type) || 0)+1);
+  }
   const shared = pairs.flatMap(pair=>pair.shared);
   const pairedRows = new Set(shared.map(([,id])=>id));
-  const sharedReviews = rows.filter(row=>pairedRows.has(row.id) && row.fields[relevantKey]==="是").length;
-  return {zip,title,total:rows.length,hit:count("是","是"),clear:count("是","否"),fullMissing,sharedReviews,
+  const sharedReviews = rows.filter(row=>pairedRows.has(row.id) && packageCardType(row.fields)).length;
+  return {zip,title,total:rows.length,counts,sharedReviews,
     pairedContracts:pairs.length};
 }
 
@@ -1081,6 +1102,10 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
 let packageSession;
 let packageBusy = false;
 let packageViewMode = "flip";
+const packageCardLabels = new Map([
+  ["related-hit","相关触发"],["related-clear","相关未触发"],
+  ["no-clause","全文缺失风险"],["no-attention","无需关注"]
+]);
 const seenPackageHeads = new Map();
 const lawyerSections = new Map();
 const lawyerCards = new Map();
@@ -1220,17 +1245,18 @@ function initialPackageForm(usePackage) {
         status.textContent = "已取消生成初始包。";
         return;
       }
-      const {zip,title,total,hit,clear,fullMissing,pairedContracts,sharedReviews} = generated;
+      const {zip,title,total,counts,pairedContracts,sharedReviews} = generated;
       const filename = packageExportName(title,"待署名","初始包","交实习生");
-      const summary = "共 "+total+" 条标注 · 相关触发 "+hit+" 条 · 相关未触发 "+clear+" 条";
-      result.replaceChildren(node("strong","初始包已生成"),node("span",summary+(fullMissing?" · 全文缺失风险 "+fullMissing+" 条":""),"small"),
+      const summary = ["共 "+total+" 条标注", ...[...packageCardLabels].map(([type,label])=>
+        label+" "+(counts.get(type) || 0)+" 条")].join(" · ");
+      result.replaceChildren(node("strong","初始包已生成"),node("span",summary,"small"),
         button("下载初始 ZIP",async ()=>{
           const chosen = await choosePackageFilename(filename,".zip");
           if (chosen) downloadPackageFile(zip,chosen);
         },"primary"),
         button("用此初始包开始复核",()=>usePackage(new File([zip],filename+".zip",{type:"application/zip"}))));
       if (pairedContracts) result.insertBefore(node("span",
-        "已识别 "+pairedContracts+" 组双立场合同 · "+sharedReviews+" 对相关标注共用复核。","small"),result.children[2]);
+        "已识别 "+pairedContracts+" 组双立场合同 · "+sharedReviews+" 对标注共用复核。","small"),result.children[2]);
       status.textContent = "";
       result.hidden = false;
     } catch (error) {
@@ -2225,7 +2251,7 @@ function handoffMark(row,view,role) {
   const information = {fields,before,note,binding,judgmentChanged};
   if (judgmentChanged && latest.action==="restore") return {...information,label:"本轮恢复",tone:"edited"};
   if (removed || (priorRisk==="是" && nextRisk==="否" && !judgmentChanged)) return {...information,label:"本轮删除",tone:"removed"};
-  if ((priorRisk!=="是" && nextRisk==="是") || (before[keyRelevant]!=="是" && relatedUntriggered(after))) {
+  if ((priorRisk!=="是" && nextRisk==="是") || (!packageCardType(before) && packageUntriggeredCard(after))) {
     return {...information,label:"本轮补标",tone:"edited"};
   }
   if (fields.length || binding || judgmentChanged) return {...information,label:"本轮有改动",tone:"edited"};
@@ -2284,10 +2310,7 @@ function packageCardBadges(row,view,role,status) {
   return box;
 }
 function matchesPackageRiskFilter(row,scope) {
-  if (scope==="related-hit") return get(row,keyRelevant)==="是" && get(row,riskField)==="是";
-  if (scope==="related-clear") return relatedUntriggered(row.fields);
-  if (scope==="no-clause") return row.scope==="full_missing";
-  return true;
+  return scope==="review" || packageCardType(row.fields)===scope;
 }
 function showFinalPackageChange(row) {
   return model.stage==="final" && byId("change-status").value==="changed" && packageSession.changedRows.has(row.id);
@@ -2296,18 +2319,23 @@ function packageCardHidden(row,role,view={...row,...roleProjection(row,role)}) {
   if (showFinalPackageChange(row)) return false;
   const removal = roleRemoval(row,view,role);
   if (removal && (role==="student" ? model.stage!=="student" : model.stage==="lawyer")) return false;
-  const unrelated = item=>item.scope!=="full_missing" && get(item,keyRelevant)!=="是";
+  const unrelated = item=>item.scope!=="full_missing" && get(item,keyRelevant)!=="是" && !packageCardType(item.fields);
   return unrelated(row) || packageCurrentRemoval(row) || unrelated(view) || !!removal;
 }
 function packageJudgmentBadge(view,prefix="") {
-  if (view.scope!=="full_missing" && get(view,keyRelevant)!=="是") return null;
-  const trigger = get(view,riskField);
-  if (trigger==="是") return node("span",prefix+"相关触发","badge risk");
-  if (trigger==="否") return node("span",prefix+"相关未触发","badge package-related-clear");
+  const type = packageCardType(view.fields);
+  if (type) {
+    const tone = type==="no-attention" ? "package-no-attention" :
+      type==="related-clear" ? "package-related-clear" : "risk";
+    return node("span",prefix+packageCardLabels.get(type),"badge "+tone);
+  }
+  if (view.scope==="full_missing" && get(view,riskField)==="否") {
+    return node("span",prefix+"全文缺失未触发","badge package-related-clear");
+  }
   return null;
 }
 function packageReviewStatus(row,role) {
-  const missingLegacyConfirmation = model.stage==="final" && model.review_related!==true && requiresRelatedReview(row) && !requiresRiskReview(row);
+  const missingLegacyConfirmation = model.stage==="final" && model.review_related!==true && requiresUntriggeredReview(row) && !requiresRiskReview(row);
   const status = node("span",row[role]?.reviewed ? "已复核" : missingLegacyConfirmation ? "历史未确认" : "待复核","badge");
   status.dataset.reviewed = "";
   return status;
@@ -2339,7 +2367,7 @@ function shownPackageRows(role) {
     const section = packageSlot(view);
     if (section===undefined) return [];
     const removal = roleRemoval(row,view,role);
-    if (!pending && get(view,riskField)!=="是" && !relatedUntriggered(view.fields) &&
+    if (!pending && !packageCardType(view.fields) &&
         !requiresReview(row) && !removal && !awaitingHandoffConfirmation(row,role) && changeStatus!=="changed") return [];
     const desiredStance = packageStanceChoices.get(section) ?? stance;
     if (desiredStance && get(view,"立场")!==desiredStance) return [];
@@ -2462,7 +2490,7 @@ function openPackageCounterpart(row,role) {
 }
 function canRemovePackageRow(row) {
   return get(row,riskField)==="是" || (get(row,riskField)==="否" &&
-    (requiresRelatedReview(row) || (row.scope==="full_missing" && requiresRiskReview(row))));
+    (requiresUntriggeredReview(row) || (row.scope==="full_missing" && requiresRiskReview(row))));
 }
 function packageRowRemoved(row) {
   const latest = latestPackageJudgment(row);
@@ -2871,7 +2899,9 @@ function finalPackageIssues(project,requireOpinion=true) {
     const clauseText = normalize(get(row,keyClause));
     const section = row.section_id || (contractUnits ? [...contractUnits].findLast(([,text])=>text===clauseText)?.[0] : undefined);
     let scope = row.scope || (clauseText ? "slice" : "unlinked");
-    if (scope==="unlinked" && paths.get(groupKey)?.mode==="full_missing") scope="full_missing";
+    const type = packageCardType(fields);
+    if (scope==="unlinked" && (paths.get(groupKey)?.mode==="full_missing" ||
+        (!clauseText.trim() && (type==="no-clause" || type==="no-attention")))) scope="full_missing";
     const item = issueContext(row.contract_id,row.rule_id,section,scope,row);
     const problems = item.problems;
     const add = (field,reason,options={})=>{
@@ -2912,15 +2942,13 @@ function finalPackageIssues(project,requireOpinion=true) {
       add("关联条款属性","「"+attribute+"」不是有效属性。可选引用、例外、生效条件、定义来源或优先适用。",{editField:"关联条款属性"});
     }
     if (scope==="full_missing") {
-      for (const [field,value] of [[keyClause,clause],[keyEvidence,evidence],["条款类型",category]]) {
+      for (const [field,value] of [[keyClause,clause],[keyEvidence,type==="no-attention" ? "" : evidence.trim()],["条款类型",category]]) {
         if (value) add(field,"全文缺失记录的这个字段应留空。",{editField:field});
       }
       if (relevant!=="否") add(keyRelevant,"全文缺失记录没有主条款，相关性应为「否」。");
       if (row.section_id) add("条款定位","全文缺失记录应以整份合同为审查对象。");
     } else {
       if (!clause || contractUnits?.get(section)!==clause) problems.push(clauseMismatchIssue(row,contract,section));
-      if (relevant==="否" && trigger==="是") add(riskField,"不相关记录的触发结论应为「否」。");
-      if (relevant==="否" && evidence) add(keyEvidence,"不相关记录的关键证据应留空。",{editField:keyEvidence});
       if (relevant==="是" && trigger==="是" && !evidence) {
         add(keyEvidence,"这条标注已判为触发，需要从左侧对应条款摘录支持判断的原文。",{editField:keyEvidence});
       }
@@ -3188,10 +3216,10 @@ const wasRisk = row => rowVersions(row).some(fields=>fields?.[riskField]==="是"
   (Array.isArray(row.review_history) ? row.review_history : []).some(event=>event?.before?.[riskField]==="是");
 const requiresRiskReview = row => row.review_required === true || wasRisk(row);
 const relatedUntriggered = fields => fields?.[keyRelevant]==="是" && fields?.[riskField]==="否";
-const requiresRelatedReview = row => rowVersions(row).some(relatedUntriggered) ||
-  (packageMode && Array.isArray(row.review_history) && row.review_history.some(event=>relatedUntriggered(event?.before)));
+const requiresUntriggeredReview = row => rowVersions(row).some(packageUntriggeredCard) ||
+  (Array.isArray(row.review_history) && row.review_history.some(event=>packageUntriggeredCard(event?.before)));
 const requiresReview = row => requiresRiskReview(row) ||
-  (packageMode && (model.stage!=="final" || model.review_related===true) && requiresRelatedReview(row));
+  (packageMode && (model.stage!=="final" || model.review_related===true) && requiresUntriggeredReview(row));
 const hasLawyerOpinion = row => typeof row.lawyer?.note === "string" && !!row.lawyer.note.trim();
 const isReviewed = row => model.stage === "student" ? !!row.student?.reviewed :
   !!row.lawyer?.reviewed && (packageMode || model.stage === "final" || hasLawyerOpinion(row));
@@ -3688,9 +3716,10 @@ function editPanel(row,article,options={}) {
       const isMissing = row.scope === "full_missing";
       const checkHints = {
         [keyRelevant]:isMissing ? "全文没有对应主条款时，相关性记录为“否”。" :
-          judgmentReadOnly ? "条款不相关时，使用「删除风险卡」。" : "看本切片是不是规则实际检查的对象。",
+          judgmentReadOnly ? "随卡片判断显示。「无需关注」记录的相关性为否。" : "看本切片是不是规则实际检查的对象。",
         [riskField]:judgmentReadOnly ? "请用卡片顶部按钮切换触发状态。" : "结合适用条件、触发条件与排除条件判断。",
-        [keyEvidence]:isMissing ? "全文无主条款时留空。" : "摘录主切片中支持风险判断的原文。相关但无风险时也要摘录能支持判断的原文。"
+        [keyEvidence]:isMissing ? "全文缺失风险的关键证据留空。「无需关注」可保留判断证据。" :
+          "摘录主切片中支持判断的原文。「无需关注」也保留证据。"
       };
       label.append(node("i",field),input);
       const hint = sourceReadOnly ? "从对应合同、专家规则或切片带出。" : checkHints[field] || fieldHints[field];
@@ -4585,7 +4614,7 @@ function launch() {
   const changeStatus = packageMode ? choose("change-status",[["","全部"],["changed","有改动"],["unchanged","未改动"]]) : null;
   changeStatus?.setAttribute("aria-label","改动状态");
   const scope = choose("scope",packageMode ?
-    [["review","全部类型"],["related-hit","相关触发"],["related-clear","相关未触发"],["no-clause","全文缺失风险"]] :
+    [["review","全部类型"],...packageCardLabels] :
     [["review","全部类型"],["slice","触发风险"],["no-clause","缺失风险"]]);
   const reviewStatus = choose("review-status",[["","全部状态"],["unreviewed","未复核"],["reviewed","已复核"]]);
   scope.setAttribute("aria-label","风险类型");

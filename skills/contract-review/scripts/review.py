@@ -195,6 +195,16 @@ def read_xlsx(path, require_annotation_sheet=False):
             yield f"row-{row.get('r')}", {name: items.get(col, "") for col, name in header.items()}
 
 
+def no_attention(fields):
+    evidence = (fields or {}).get(EVIDENCE)
+    return bool(fields and fields.get(REL) == "否" and fields.get(HIT) == "否"
+                and isinstance(evidence, str) and evidence.strip())
+
+
+def reviewable_untriggered(fields):
+    return bool(fields and fields.get(HIT) == "否" and (fields.get(REL) == "是" or no_attention(fields)))
+
+
 def attach_rows(project, contracts, rules, label_path):
     if project.get("rows"):
         raise ValueError("项目已有标注行，请使用空 rows 以导入已有标注")
@@ -214,8 +224,11 @@ def attach_rows(project, contracts, rules, label_path):
         r = by_rule[(fields[RISK], fields[STANCE])]
         entry = {"id": row_id, "fields": fields, "contract_id": c[0]["id"] if len(c) == 1 else "",
                  "rule_id": r[0]["id"] if len(r) == 1 else ""}
-        if not fields[CLAUSE] and not fields[EVIDENCE] and fields[REL] == "否":
-            entry["scope"] = "unlinked"
+        if not fields[CLAUSE].strip() and fields[REL] == "否":
+            if fields[HIT] == "是" or no_attention(fields):
+                entry["scope"] = "full_missing"
+            elif not fields[EVIDENCE]:
+                entry["scope"] = "unlinked"
         project["rows"].append(entry)
     return project
 
@@ -294,11 +307,12 @@ def validate(project, contracts, rules, final=False):
         section_id = row.get("section_id") or full_texts.get(c_id, {}).get(clause)
         group = (c_id, r_id, row.get("matter_id", ""))
         scope = row.get("scope") or ("slice" if clause else "unlinked")
-        if scope == "unlinked" and paths.get(group, {}).get("mode") == "full_missing":
+        if scope == "unlinked" and (paths.get(group, {}).get("mode") == "full_missing"
+                                    or (not clause.strip() and f[REL] == "否" and (f[HIT] == "是" or no_attention(f)))):
             scope = "full_missing"
         if scope == "full_missing":
-            if clause or evidence or f[REL] != "否" or row.get("section_id"):
-                add(row_id, FORMAT, "全文缺失独立记录相关性填否，主条款、关键证据和切片定位留空")
+            if clause or (evidence.strip() and not no_attention(f)) or f[REL] != "否" or row.get("section_id"):
+                add(row_id, FORMAT, "合同级记录相关性填否，主条款和切片定位留空。全文缺失风险的关键证据留空")
             if f[CLAUSE_TYPE]:
                 add(row_id, FORMAT, "全文缺失独立记录没有主切片，条款类型留空")
         else:
@@ -306,8 +320,6 @@ def validate(project, contracts, rules, final=False):
                 add(row_id, JUDGMENT, "无主切片，需用规则及全文核对是否为独立全文缺失记录")
             elif contract and selected[c_id].get(section_id) != clause:
                 add(row_id, COVERAGE, "条款原文无法与合同版本的完整一级切片精确对应", field=CLAUSE)
-            if f[REL] == "否" and (f[HIT] == "是" or evidence):
-                add(row_id, JUDGMENT, "常规不相关切片应为风险否、证据留空；请先复核相关性")
             if f[REL] == "是" and not evidence:
                 add(row_id, JUDGMENT, "相关记录请检查主切片是否有支持判断的原文", f[HIT] == "是", field=EVIDENCE)
         if evidence and clause:
@@ -340,8 +352,8 @@ def validate(project, contracts, rules, final=False):
                              (row.get("lawyer_view") or {}).get("fields")]
         if isinstance(history, list):
             related_snapshots.extend(event.get("before") for event in history if isinstance(event, dict))
-        was_related_untriggered = any(isinstance(snapshot, dict) and (snapshot.get(REL), snapshot.get(HIT)) == ("是", "否")
-                                      for snapshot in related_snapshots)
+        was_reviewable_untriggered = any(isinstance(snapshot, dict) and reviewable_untriggered(snapshot)
+                                         for snapshot in related_snapshots)
         if not isinstance(history, list):
             add(row_id, JUDGMENT, "复核操作记录应为列表")
         else:
@@ -355,10 +367,10 @@ def validate(project, contracts, rules, final=False):
                         add(row_id, JUDGMENT, "删去风险批注须保留操作原因")
                     if (not isinstance(before, dict) or not set(FIELDS) <= before.keys()
                             or (before.get(HIT) != "是" and (before.get(HIT) != "否"
-                                or not (was_related_untriggered or (scope == "full_missing" and risk_card))))):
+                                or not (was_reviewable_untriggered or (scope == "full_missing" and risk_card))))):
                         add(row_id, JUDGMENT, "删去风险批注须保留删除前的标注字段和原风险结论")
-        related_review = project.get("review_related") is True and was_related_untriggered
-        if final and (risk_card or related_review):
+        untriggered_review = project.get("review_related") is True and was_reviewable_untriggered
+        if final and (risk_card or untriggered_review):
             for role, label in (("student", "同学"), ("lawyer", "律师")):
                 if role == "student" and row.get("lawyer_review_only") is True:
                     continue

@@ -2,7 +2,7 @@
 
 ## 开始前
 
-在本机 Codex 打开项目，或解压 v2.0 工具 ZIP，或从 GitHub 安装其中的 `skills/contract-review`。用本机 Python、Node.js 和 `lark-cli`。以下命令的 `$REVIEW_WORKFLOW` 是 `review_workflow.py` 的实际路径，开发项目在 `tools/`，Skill 内在 `scripts/`。示例中的 `work/` 使用可写目录。
+在本机 Codex 打开项目，或解压「合同标注复核工具.zip」，或请 `$skill-installer` 从 [contract-review 仓库](https://github.com/limitness-rain/contract-review)安装 `contract-review`。仓库内的安装路径为 `skills/contract-review`。用本机 Python、Node.js 和 `lark-cli`。以下命令的 `$REVIEW_WORKFLOW` 是 `review_workflow.py` 的实际路径，开发项目在 `tools/`，Skill 内在 `scripts/`。示例中的 `work/` 使用可写目录。
 
 优先复用用户已登录的飞书身份。授权或过期时用 `lark-cli auth status --json --verify` 确认；按错误反馈用 `lark-cli auth login --scope '<缺少的 scope>' --no-wait --json` 发起增量授权。给用户原始授权链接和由 `lark-cli auth qrcode` 生成的二维码，用户完成后用 `lark-cli auth login --device-code '<返回的 device_code>'` 完成授权。如果运行环境无法访问本机钥匙串，使用允许访问该钥匙串的本机执行环境。核对企业身份，然后继续原操作。取件用本人身份，只读取来源。
 
