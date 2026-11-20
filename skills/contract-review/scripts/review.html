@@ -1,0 +1,1849 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>合同标注复核</title>
+<style>
+:root { color-scheme:light; --ink:#172921; --soft:#4d6156; --line:#dce5dd; --paper:#fff; --ground:#edf2ec; --accent:#246046; --accent-dark:#173f30; --amber:#ffedb0; font:15px/1.65 "Microsoft YaHei","PingFang SC",system-ui,sans-serif; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--ground); color:var(--ink); }
+button,input,select,textarea { font:inherit; color:inherit; }
+button,select,input[type=search],input[type=text],textarea { border:1px solid #bdcdc1; border-radius:7px; background:var(--paper); }
+button { cursor:pointer; padding:6px 11px; }
+button:hover:not(:disabled) { border-color:var(--accent); background:#eff7f0; }
+button:disabled { cursor:default; opacity:.5; }
+button.primary { border-color:var(--accent-dark); background:var(--accent-dark); color:#fff; }
+button.primary:hover:not(:disabled) { background:var(--accent); }
+button.danger { color:#91252b; }
+select,input[type=search],input[type=text],textarea { padding:5px 8px; min-width:0; }
+textarea { width:100%; resize:vertical; display:block; }
+:focus-visible { outline:2px solid #1b7754; outline-offset:2px; }
+header { background:#f8fbf6; border-bottom:1px solid var(--line); padding:11px 19px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+h1 { margin:0; font-size:clamp(18px, 2vw, 25px); overflow-wrap:anywhere; }
+h2,h3,p { margin:0; }
+.template-start { max-width:620px; margin:clamp(24px,10vh,96px) auto; padding:24px; background:var(--paper); border:1px solid var(--line); border-radius:9px; }
+body:has(.package-start) { min-height:100vh; background:radial-gradient(ellipse at 25% 0,#e2ede2 0,transparent 62%),#f4f6f0; }
+.package-start { width:min(100% - 32px,520px); margin:clamp(24px,10vh,96px) auto; border:1px solid #c8d9cb; border-radius:18px; overflow:hidden; box-shadow:0 20px 54px #173f301c; background:var(--paper); }
+.package-start-intro { padding:26px 28px 24px; background:linear-gradient(112deg,#173f30,#275c46); color:#fff; }
+.package-start-intro h1 { font-size:27px; line-height:1.3; }
+.package-start-lead { margin-top:8px; color:#e3eee7; }
+.package-start-modes { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; padding:16px 28px 0; }
+.package-start-modes button[aria-pressed="true"] { color:#173f30; background:#e2eee4; border-color:#9ebaa6; font-weight:700; }
+.package-start-view { display:flex; align-items:center; gap:10px; padding:14px 28px 0; font-size:14px; font-weight:650; }
+.package-start-view select { flex:1; min-width:0; }
+.package-start-field input[type="file"] { border:1px dashed #a8bead; background:#f7faf5; }
+.package-start-form { display:grid; gap:12px; padding:23px 28px 28px; }
+.package-start-label,.package-start-field > span { font-size:14px; font-weight:650; }
+.package-start-file { display:flex; gap:10px; align-items:center; min-width:0; border:1px dashed #a8bead; background:#f7faf5; border-radius:10px; padding:10px 12px; }
+.package-start-file button { flex:none; padding:5px 10px; }
+.package-start-filename { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--soft); font-size:13px; }
+.package-start-preview { display:grid; gap:2px; padding:8px 11px; border-radius:7px; background:#edf5ee; overflow-wrap:anywhere; }
+.package-start-field { display:grid; gap:5px; }
+.package-start-field input { width:100%; padding:8px 11px; }
+.package-start-form > .primary { margin-top:2px; justify-self:stretch; }
+.package-start-status { color:#852d34; overflow-wrap:anywhere; }
+.package-start-status:empty { display:none; }
+.package-card-summary { grid-template-columns:minmax(0,32%) minmax(0,1fr); font-size:13px; }
+.package-card-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; margin-left:auto; }
+.badge.package-related-clear { color:#195b64; background:#e2f3f2; }
+.badge.package-change-edited { color:#194878; background:#eaf3ff; }
+.badge.package-change-confirmed { color:#315841; background:#e7f2e7; }
+.badge.package-change-removed { color:#8a2a32; background:#f9e8e8; }
+.package-removed-card { border-color:#e4b9ba; background:#fffafa; }
+.package-removal-reason { background:#f9eeee; color:#75292d; border-radius:6px; padding:7px 9px; }
+.package-diff-label { display:flex; gap:6px; align-items:center; font-weight:650; }
+.package-diff-value { background:#edf5ff; border-left:3px solid #4a84bd; border-radius:4px; padding:6px 9px; }
+.package-diff-value details { margin-top:4px; }
+[hidden] { display:none !important; }
+.package-view > header { padding:5px 12px; gap:4px 8px; }
+.package-view > header h1 { font-size:16px; flex:1 1 200px; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.package-view > header .header-actions { gap:4px; }
+.package-view button,.package-menu > summary { font-size:13px; padding:3px 8px; }
+.package-info { flex:1 1 100%; min-width:0; display:flex; align-items:center; gap:4px 11px; }
+.package-info > span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.package-info > span:not(.status) { flex-shrink:0; max-width:25%; }
+.package-info .status { flex:1 1 8em; min-width:0; min-height:0; padding:0; border:0; background:none; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.package-view > .toolbar { padding:5px 12px; gap:5px 10px; font-size:13px; }
+.package-view .toolbar label { gap:4px; }
+.package-view .toolbar select,.package-view .toolbar input[type=search] { padding:2px 5px; }
+.package-view .toolbar #contract { max-width:min(205px,55vw); }
+.package-view .toolbar #stance { max-width:min(160px,45vw); }
+.package-view .toolbar #search { width:min(155px,55vw); }
+.package-view .pane-heading { min-height:36px; padding:4px 8px; }
+.package-view .pane-heading h2 { font-size:14px; }
+.package-view .pane-heading .toolbar-line { gap:4px; }
+.package-view .pane-heading .small { font-size:11px; white-space:nowrap; }
+.package-view .study { padding:7px; }
+.package-menu { position:relative; }
+.package-menu > summary { list-style:none; white-space:nowrap; color:var(--ink); border:1px solid #bdcdc1; border-radius:7px; background:var(--paper); user-select:none; }
+.package-menu > summary::-webkit-details-marker { display:none; }
+.package-menu > summary::after { content:" ▾"; }
+.package-menu-panel { position:absolute; top:calc(100% + 4px); right:0; z-index:12; min-width:max-content; padding:4px; display:grid; gap:3px; border:1px solid #bdcdc1; border-radius:7px; background:var(--paper); box-shadow:0 4px 14px #17292125; }
+.package-menu-panel button { text-align:left; }
+.package-review-panel label > span { font-size:13px; }
+.package-review-panel .package-review-confirm { width:100%; margin-top:8px; min-height:38px; font-size:14px; font-weight:650; }
+.package-clause-actions { margin-top:5px; }
+.package-version-option { display:flex; align-items:center; gap:8px; }
+.package-version-switch { display:flex; justify-content:flex-end; align-items:center; gap:8px; margin-bottom:8px; }
+.package-version-switch span { min-width:0; overflow-wrap:anywhere; margin-right:auto; color:var(--version-ink,#244663); font-weight:650; }
+.package-version-switch .package-flip { flex:none; margin-left:auto; border-color:var(--version-ink,#244663); background:var(--version-ink,#244663); color:#fff; font-weight:650; }
+.package-version-switch .package-flip:hover:not(:disabled) { background:var(--version-hover,#325b7d); }
+.package-list-source { color:var(--version-ink,var(--ink)); overflow-wrap:anywhere; }
+.package-validation-issue { margin-top:9px; }
+.package-validation-problem { display:grid; justify-items:start; gap:3px; padding:8px 10px; border-left:3px solid #c19b61; background:#faf6ed; border-radius:4px; min-width:0; }
+.package-validation-problem > button { margin-top:3px; }
+.package-issue-comparison { display:grid; gap:5px; }
+.package-issue-snippet { padding:6px 8px; border:1px solid var(--line); border-radius:5px; }
+.package-lane-empty { padding:16px 12px; color:var(--soft); font-size:13px; }
+.package-sentence-diff { display:grid; gap:7px; }
+.package-sentence-diff strong { display:block; font-size:12px; color:var(--accent-dark); }
+.package-sentence-diff mark { background:#cce2fc; }
+.package-sentence-diff > div:first-child mark { background:#f3d9de; }
+.package-detail-page { background:var(--paper); }
+.package-detail-nav { position:sticky; top:0; z-index:2; display:flex; flex-wrap:wrap; gap:4px; padding:6px 8px; background:var(--paper); border-bottom:1px solid var(--line); }
+.package-detail-back,.package-edit-button { font-weight:600; color:var(--accent-dark); }
+.package-detail-content { border:0; margin:0; padding:10px; }
+.package-detail-content h3 { overflow-wrap:anywhere; }
+.package-detail-nav .package-field-toggle { margin-left:auto; }
+.package-edit-form .edit-grid { min-inline-size:0; }
+.package-edit-form > .small { margin-bottom:6px; }
+.package-fields { grid-template-columns:minmax(0,1fr); }
+.package-fields dd { padding-bottom:7px; border-bottom:1px solid var(--line); }
+.package-task { display:flex; gap:8px; align-items:start; }
+.package-history { margin:16px 0; }
+.template-start p { margin-top:8px; }
+.template-start nav { display:flex; flex-wrap:wrap; gap:8px 18px; margin-top:16px; }
+.template-start a { color:var(--accent-dark); }
+header .header-actions { margin-left:auto; display:flex; gap:7px; flex-wrap:wrap; }
+.status { padding:6px 19px; background:#f8fbf6; border-bottom:1px solid var(--line); color:var(--soft); min-height:38px; overflow-wrap:anywhere; }
+.view { height:100vh; height:100dvh; min-height:440px; display:flex; flex-direction:column; }
+.toolbar { padding:9px 19px; display:flex; align-items:center; flex-wrap:wrap; gap:8px 16px; background:#f8fbf6; border-bottom:1px solid var(--line); }
+.toolbar label { display:flex; align-items:center; gap:6px; max-width:100%; white-space:nowrap; }
+.toolbar select { max-width:min(290px,70vw); }
+.toolbar input[type=search] { width:min(215px,60vw); }
+.study { display:grid; grid-template-columns:var(--panel-columns,minmax(0,1fr) 12px minmax(0,1fr)); padding:11px; min-height:0; flex:1; }
+.study.with-lawyer { grid-template-columns:var(--panel-columns,minmax(0,1fr) 12px minmax(0,1fr) 12px minmax(0,.8fr)); }
+.panel-divider { cursor:col-resize; touch-action:none; display:grid; place-items:center; border-radius:5px; }
+.panel-divider::after { content:""; width:4px; height:36px; border-radius:3px; background:#a8bcad; }
+.panel-divider:hover,.panel-divider:focus-visible,.panel-divider.dragging { background:#dce9dd; }
+.resizing-panels { cursor:col-resize; user-select:none; }
+.lawyer-content { padding:10px; }
+.lawyer-content > h3 { margin:12px 0 6px; font-size:15px; }
+.lawyer-content > h3:first-child { margin-top:0; }
+.discussion-source { overflow-wrap:anywhere; }
+.pane { min-height:0; display:flex; flex-direction:column; background:#f8fbf6; border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+.pane-heading { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:5px; padding:8px 13px; border-bottom:1px solid var(--line); background:var(--paper); }
+.pane-heading h2 { font-size:15px; }
+.pane-heading .toolbar-line { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.scroller { flex:1; overflow:auto; overflow-anchor:none; min-height:0; scrollbar-gutter:stable; scroll-padding:12px; }
+.doc-section,.row-section { margin:11px; border-radius:7px; }
+.doc-section { padding:14px 19px; background:var(--paper); border:1px solid var(--line); }
+.doc-section.active,.row-section.active { outline:1px solid #a9c4b1; }
+.doc-section h3, .row-section h3 { font-size:15px; margin-bottom:7px; color:var(--accent-dark); }
+.doc-text,.wrap { white-space:pre-wrap; overflow-wrap:anywhere; }
+.doc-text { tab-size:4; }
+.row-section { padding:7px; }
+.row-section + .row-section { border-top:1px solid var(--line); }
+.row-section > h3 { padding:0 3px; }
+.row-section.empty-section > h3 { color:var(--soft); margin-bottom:1px; }
+.row-section.empty-section > p { padding-top:1px; padding-bottom:2px; }
+.scroll-tail { pointer-events:none; }
+.card { background:var(--paper); padding:11px 12px; border:1px solid var(--line); border-radius:8px; margin:0 0 8px; display:grid; gap:8px; }
+.card.selected { border-color:var(--accent); }
+.package-card-stance { color:var(--version-ink,var(--ink)); font-weight:750; }
+.package-edit-form :is(input,textarea)[readonly] { background:#f0f4f0; color:var(--soft); }
+[data-contract-version="first"] { --version-paper:#eff6fc; --version-border:#b9d0e4; --version-edge:#658db1; --version-ink:#244663; --version-hover:#325b7d; --version-turn:-48deg; }
+[data-contract-version="second"] { --version-paper:#fbf3e5; --version-border:#ddc9a6; --version-edge:#a87c3d; --version-ink:#68461e; --version-hover:#805729; --version-turn:48deg; }
+:is(.doc-section,.package-card,.package-detail-content)[data-contract-version] { background:var(--version-paper); border-color:var(--version-border); box-shadow:inset 3px 0 var(--version-edge); }
+.package-card[data-contract-version].package-removed-card { border-color:#e4b9ba; }
+:is(.doc-section,.row-section)[data-contract-version].active { outline-color:var(--version-edge); }
+.package-card[data-contract-version].selected { border-color:var(--version-ink); }
+@media (prefers-reduced-motion:no-preference) {
+  .package-version-enter { animation:package-version-turn 280ms cubic-bezier(.2,.65,.3,1); }
+  @keyframes package-version-turn {
+    from { transform:perspective(900px) rotateY(var(--version-turn,-48deg)); opacity:.3; }
+    to { transform:perspective(900px) rotateY(0); opacity:1; }
+  }
+}
+.card-head, .row-actions { display:flex; gap:6px 8px; flex-wrap:wrap; align-items:center; }
+.card-head > strong { flex:1 0 165px; overflow-wrap:anywhere; }
+.badge { background:#e7f2e7; color:#214a35; border-radius:20px; padding:1px 8px; font-size:12px; white-space:nowrap; }
+.badge.risk { background:#fce5dd; color:#802b22; }
+.badge.empty { background:#ffefc8; color:#674a0e; }
+.small,.muted { color:var(--soft); font-size:13px; }
+.placeholder { font-size:13px; color:var(--soft); padding:6px 4px; }
+.summary-grid { margin:0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:3px 10px; }
+.summary-grid dt { color:var(--soft); }
+.summary-grid dd { margin:0; }
+details > summary { cursor:pointer; color:var(--accent-dark); }
+.rule-details { border:1px solid var(--line); border-radius:5px; }
+.rule-details > summary { padding:7px 10px; font-weight:600; }
+.rule-details[open] > summary { border-bottom:1px solid var(--line); }
+.rule-details > p { margin:8px 10px; }
+.related-clause { padding:8px 10px; border:1px solid var(--line); border-radius:7px; }
+.related-clause h4 { margin:0 0 5px; font-size:inherit; }
+.field-empty { color:var(--soft); }
+.details-body,.edit-grid { padding-top:7px; }
+.field-group { margin-top:8px; padding:8px 0 0; border-top:1px solid var(--line); }
+.field-group h3 { margin-bottom:3px; color:var(--accent-dark); font-size:13px; }
+fieldset.edit-grid { margin:0; border:1px solid var(--line); border-radius:5px; }
+fieldset.edit-grid legend { color:var(--accent-dark); font-size:13px; }
+.edit-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.edit-grid label { min-width:0; }
+.edit-grid i { display:block; font-style:normal; font-size:13px; }
+.edit-grid label > select,.edit-grid label > input { width:100%; }
+.full { grid-column:1/-1; }
+mark { background:var(--amber); padding:1px 0; color:inherit; }
+mark.target { background:#fbc874; }
+.review { padding:8px; background:#f4f7f3; border-radius:5px; }
+.review label,.review textarea { margin-top:4px; }
+.review label { display:block; }
+.review .small { margin-top:5px; }
+.change { border-left:2px solid #adc5b0; padding:4px 6px; margin:5px 0; }
+.change p { margin-top:3px; }
+dialog { max-width:min(800px,93vw); max-height:85vh; width:100%; overflow:auto; padding:17px; border:1px solid #a6baa9; border-radius:9px; color:var(--ink); box-shadow:0 8px 45px #17292126; }
+dialog::backdrop { background:#17292166; }
+dialog ul { padding-left:21px; }
+dialog .close { float:right; }
+.package-filename-dialog { width: min(520px, 90vw); }
+.package-filename-dialog input { width:100%; margin:5px 0 10px; }
+@media(max-width:760px) {
+  header,.toolbar,.status { padding-left:9px; padding-right:9px; }
+  .study { grid-template-columns:1fr; grid-template-rows:minmax(160px,.72fr) minmax(240px,1fr); gap:5px; padding:5px; }
+  .view { min-height:600px; }
+  .doc-section { padding:8px 10px; }
+  .study.with-lawyer { grid-template-columns:1fr; grid-template-rows:minmax(160px,.72fr) minmax(240px,1fr) minmax(240px,1fr); }
+  .panel-divider { display:none; }
+  .view:has(.with-lawyer) { min-height:820px; }
+  .package-info > span:not(.status) { max-width:34%; }
+  .package-view .header-actions { margin-left:0; }
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script id="review-data" type="application/json">__REVIEW_DATA__</script>
+<script>
+"use strict";
+
+const root = document.querySelector("#app");
+const dataTag = document.querySelector("#review-data");
+const stageNames = {student:"同学复核", lawyer:"律师复核", final:"律师已复核"};
+const keyEvidence = "风险判断关键证据";
+const keyRelevant = "条款与规则是否相关";
+const defaultRisk = "是否触发该风险";
+const keyClause = "条款原文";
+const fieldHints = {
+  "合同附件名称":"与本次使用的合同文件名一致。",
+  "风险名称":"沿用专家规则名称。",
+  "立场":"把合同当事人映射到专家规则的角色。",
+  "风险等级":"取自对应专家规则。",
+  "审查逻辑":"保留专家规则全文。",
+  "条款类型":"填写正式分类名称。",
+  "条款原文":"保留对应一级条款的完整原文，含标题、表格和换行。摘录写入关键证据，拟改文字写入修订建议。全文缺失记录留空。",
+  "关联条款类型":"填写正式分类名称。",
+  "关联条款属性":"使用模板里的中文选项。",
+  "关联条款原文":"摘录影响判断的完整一级条款。",
+  "风险说明":"说明本合同中成立的风险及影响。",
+  "修订建议":"写成可直接使用的合同条款。"
+};
+const wideFields = new Set(["条款原文", "审查逻辑", "关联条款原文", keyEvidence, "风险说明", "修订建议"]);
+const stageFileNames = {student:"同学复核中", lawyer:"给律师复核", final:"律师已复核"};
+const packageMode = typeof bootPackage === "function";
+const isTemplate = dataTag.textContent.trim() === "__REVIEW_DATA__";
+let model;
+try {
+  model = isTemplate ? {contracts:[],rows:[],fields:[]} : JSON.parse(dataTag.textContent);
+  if (!Array.isArray(model.contracts) || !Array.isArray(model.rows) || !Array.isArray(model.fields)) {
+    throw new Error("缺少合同、标注记录或字段");
+  }
+} catch (error) {
+  root.textContent = "复核页数据无法读取。请使用工具重新生成页面。";
+  throw error;
+}
+model.stage = stageNames[model.stage] ? model.stage : "student";
+let questions, suggestions, hasLawyerPane, riskField, binaryFields, fieldGroups;
+const contractById = new Map();
+const rulesById = new Map();
+const rowById = new Map();
+const knownPaths = new Map();
+let contractId;
+function bindModel() {
+  questions = model.review_questions ?? [];
+  suggestions = model.lawyer_suggestions ?? [];
+  hasLawyerPane = packageMode || model.stage !== "student";
+  riskField = [defaultRisk, "是否有风险", "有无风险"].find(key => model.fields.includes(key)) || defaultRisk;
+  binaryFields = new Set([keyRelevant, riskField]);
+  fieldGroups = [
+    {title:"合同与专家规则", fields:["合同附件名称","风险名称","立场","风险等级","审查逻辑"]},
+    {title:"主条款", fields:["条款类型",keyClause]},
+    {title:"风险判断", fields:[keyRelevant,riskField,keyEvidence]},
+    {title:"关联条款", fields:["关联条款类型","关联条款属性","关联条款原文"]},
+    {title:"风险说明与修订建议", fields:["风险说明","修订建议"]}
+  ];
+  const groupedFields = fieldGroups.flatMap(group => group.fields);
+  const otherFields = model.fields.filter(field => !groupedFields.includes(field));
+  if (otherFields.length) fieldGroups.push({title:"其他字段",fields:otherFields});
+  contractById.clear();
+  rulesById.clear();
+  knownPaths.clear();
+  for (const item of model.contracts) contractById.set(String(item.id),item);
+  for (const item of model.rules || []) rulesById.set(String(item.id),item);
+  for (const item of model.paths || []) knownPaths.set(JSON.stringify([item.contract_id,item.rule_id]),item.mode);
+  contractId = String(model.contracts[0]?.id ?? "");
+}
+bindModel();
+let selected = "";
+let linked = true;
+const scrollInset = 11;
+const expectedScroll = new WeakMap();
+let scrollFrame = 0;
+let pendingSide = "";
+let lastUserSide = "left";
+let activeSectionId = "";
+let openEditor = "";
+let dirty = false;
+const rowElements = new Map();
+const leftSections = new Map();
+const rightSections = new Map();
+const norm = value => String(value ?? "").replace(/\s/g,"");
+const asText = value => Array.isArray(value) ? value.join("\n") : String(value ?? "");
+const get = (row, field) => asText(row.fields?.[field]);
+const rowVersions = row => [row.fields,row.original_fields,row.submitted_fields,row.student_view?.fields,row.lawyer_view?.fields];
+const wasRisk = row => rowVersions(row).some(fields=>fields?.[riskField]==="是") ||
+  (Array.isArray(row.review_history) ? row.review_history : []).some(event=>event?.before?.[riskField]==="是");
+const requiresRiskReview = row => row.review_required === true || wasRisk(row);
+const relatedUntriggered = fields => fields?.[keyRelevant]==="是" && fields?.[riskField]==="否";
+const requiresRelatedReview = row => rowVersions(row).some(relatedUntriggered) ||
+  (packageMode && Array.isArray(row.review_history) && row.review_history.some(event=>relatedUntriggered(event?.before)));
+const requiresReview = row => requiresRiskReview(row) ||
+  (packageMode && (model.stage!=="final" || model.review_related===true) && requiresRelatedReview(row));
+const hasLawyerOpinion = row => typeof row.lawyer?.note === "string" && !!row.lawyer.note.trim();
+const isReviewed = row => model.stage === "student" ? !!row.student?.reviewed :
+  !!row.lawyer?.reviewed && (packageMode || model.stage === "final" || hasLawyerOpinion(row));
+const removedRisk = row => get(row,riskField)==="否" && (packageMode ? packageRowRemoved(row) : requiresRiskReview(row));
+const originalValue = (row, field) => asText(row.original_fields?.[field]);
+const byId = id => document.getElementById(id);
+
+function node(tag, label, className) {
+  const item = document.createElement(tag);
+  if (label != null) item.textContent = label;
+  if (className) item.className = className;
+  return item;
+}
+function labelled(text, control, className) {
+  const label = node("label", null, className);
+  label.append(node("span", text), control);
+  return label;
+}
+function button(label, action, className) {
+  const control = node("button", label, className);
+  control.type = "button";
+  control.onclick = action;
+  return control;
+}
+function option(select, value, text) {
+  const entry = node("option", text);
+  entry.value = value;
+  select.append(entry);
+}
+function choose(id, entries) {
+  const select = node("select");
+  select.id = id;
+  entries.forEach(([value, text]) => option(select, value, text));
+  return select;
+}
+function changed(action) {
+  dirty = true;
+  if (packageMode) capturePackageChange(action);
+}
+function setNotice(message) {
+  const status = byId("message");
+  status.textContent = message;
+  if (packageMode) status.title = message;
+}
+function reviewData(row, stage) {
+  return row[stage] ||= { reviewed:false, note:"" };
+}
+function indexRows() {
+  rowById.clear();
+  for (const [index, row] of model.rows.entries()) {
+    if (packageMode) { rowById.set(row.id,row); continue; }
+    row.id = String(row.id ?? ("row-" + (index+1)));
+    row.contract_id = String(row.contract_id ?? "");
+    row.rule_id = String(row.rule_id ?? "");
+    row.fields ||= {};
+    row.original_fields ||= {...row.fields};
+    if (model.stage === "lawyer" && row.lawyer?.reviewed && !hasLawyerOpinion(row)) row.lawyer.reviewed = false;
+    const pathMode = knownPaths.get(JSON.stringify([row.contract_id,row.rule_id]));
+    if ((!row.scope || row.scope === "unlinked") && pathMode === "full_missing" && !get(row,keyClause)) row.scope = "full_missing";
+    rowById.set(row.id, row);
+  }
+}
+function reviewProgressLabel() {
+  const count = node("span",null,"small");
+  count.id = "progress";
+  count.setAttribute("aria-live","polite");
+  return count;
+}
+function progress() {
+  const required = packageMode ? packageReviewRows() : model.rows.filter(requiresReview);
+  byId("progress").textContent = (packageMode ? "已复核 " : "全批风险卡已复核 ") + required.filter(isReviewed).length + " / " + required.length;
+}
+function currentSections(id=contractId) {
+  const contract = contractById.get(id);
+  return (contract?.sections || []).map((section, index) => ({
+    id:String(section.id ?? ("section-" + (index+1))),
+    heading:asText(section.heading),
+    text:asText(section.text)
+  }));
+}
+function resolveSection(row, sections) {
+  if (row.scope === "full_missing") return "";
+  const clause = norm(get(row, keyClause));
+  const evidence = norm(get(row, keyEvidence));
+  if (!clause && !evidence) return "";
+  const explicit = sections.find(section => section.id === String(row.section_id ?? ""));
+  if (explicit && (!clause || norm(explicit.text).includes(clause) || norm(explicit.heading + explicit.text).includes(clause))) return explicit.id;
+  const exact = sections.filter(section => norm(section.text) === clause || norm(section.heading + section.text) === clause);
+  if (clause && exact.length === 1) return exact[0].id;
+  for (const probe of [clause, evidence].filter(Boolean)) {
+    const matched = sections.filter(section => norm(section.heading + section.text).includes(probe));
+    if (matched.length === 1) return matched[0].id;
+  }
+  return "";
+}
+function filterRows() {
+  const scope = byId("scope").value;
+  const status = byId("review-status").value;
+  const stance = byId("stance")?.value;
+  const query = byId("search").value.trim().toLowerCase();
+  return model.rows.filter(row => {
+    if (contractId ? row.contract_id !== contractId : contractById.has(row.contract_id)) return false;
+    if (stance && get(row, "立场") !== stance) return false;
+    if (query && ![row.id, get(row, "风险名称"), get(row, keyEvidence)].some(value => value.toLowerCase().includes(query))) return false;
+    if (packageMode) {
+      if (removedRisk(row) || !requiresReview(row) || !matchesPackageRiskFilter(row,scope)) return false;
+    } else {
+      if (get(row,riskField) !== "是") return false;
+      const fullMissing = row.scope === "full_missing";
+      if (scope === "no-clause" && !fullMissing) return false;
+      if (scope === "slice" && fullMissing) return false;
+    }
+    if (status === "unreviewed") return !isReviewed(row);
+    if (status === "reviewed") return isReviewed(row);
+    return true;
+  });
+}
+function resetRiskFilters(id) {
+  if (packageMode) configurePackageContract(id);
+  else contractId = contractById.has(id) ? id : "";
+  const values = {contract:contractId,scope:"review","review-status":"","change-status":"",stance:"",search:""};
+  for (const [key,value] of Object.entries(values)) {
+    const input = byId(key);
+    if (!input) continue;
+    input.value = value;
+    input.dataset.past = value;
+  }
+}
+function evidenceRanges(section, rows) {
+  const ranges = [];
+  for (const row of rows) {
+    const evidence = get(row, keyEvidence).trim();
+    if (!evidence) continue;
+    const snippets = section.text.includes(evidence) ? [evidence] : evidence.split(/\r?\n/);
+    for (const snippet of snippets.map(value => value.trim()).filter(Boolean)) {
+      let start = section.text.indexOf(snippet);
+      while (start >= 0) {
+        ranges.push({start,end:start + snippet.length,id:row.id});
+        start = section.text.indexOf(snippet,start + snippet.length);
+      }
+    }
+  }
+  return ranges.sort((a,b) => a.start - b.start || a.end - b.end);
+}
+function markedText(section, rows) {
+  const text = node("div", null, "doc-text");
+  const merged = [];
+  for (const range of evidenceRanges(section, rows)) {
+    const previous = merged.at(-1);
+    if (previous && previous.end > range.start) {
+      previous.end = Math.max(previous.end,range.end);
+      previous.ids.add(range.id);
+    } else {
+      merged.push({start:range.start,end:range.end,ids:new Set([range.id])});
+    }
+  }
+  let offset = 0;
+  for (const range of merged) {
+    text.append(document.createTextNode(section.text.slice(offset,range.start)));
+    const mark = node("mark", section.text.slice(range.start,range.end));
+    const ids = [...range.ids];
+    mark.dataset.rows = JSON.stringify(ids);
+    mark.tabIndex = 0;
+    mark.setAttribute("role","button");
+    mark.setAttribute("aria-label","查看引用此证据的记录");
+    mark.title = "定位到对应标注";
+    const jump = () => {
+      const id = ids.includes(selected) ? ids[(ids.indexOf(selected)+1)%ids.length] : ids[0];
+      focusRow(id);
+    };
+    mark.onclick = jump;
+    mark.onkeydown = event => {
+      if (["Enter"," "].includes(event.key)) { event.preventDefault(); jump(); }
+    };
+    text.append(mark);
+    offset = range.end;
+  }
+  text.append(document.createTextNode(section.text.slice(offset)));
+  return text;
+}
+function activateSection(id) {
+  if (packageMode) return activatePackageSection(id);
+  if (id === activeSectionId) return;
+  for (const sections of [leftSections, rightSections]) {
+    sections.get(activeSectionId)?.classList.remove("active");
+    sections.get(id)?.classList.add("active");
+  }
+  activeSectionId = id;
+}
+function anchorTop(pane, element) {
+  return pane.scrollTop + element.getBoundingClientRect().top - pane.getBoundingClientRect().top - scrollInset;
+}
+function writeScroll(pane, top) {
+  const previous = pane.scrollTop;
+  pane.scrollTop = top;
+  if (Math.abs(previous - pane.scrollTop) > 0.5) expectedScroll.set(pane, pane.scrollTop);
+}
+function align(pane, element) {
+  if (element) writeScroll(pane, anchorTop(pane, element));
+}
+function refreshScrollTail() {
+  const columns = packageMode ? packageAnchors() : [["left",leftSections],["right",rightSections]];
+  for (const [side, sections] of columns) {
+    const pane = byId(side);
+    if (pane?.hidden) continue;
+    const tail = pane?.querySelector(".scroll-tail");
+    const last = sections.size ? tail?.previousElementSibling : null;
+    if (!tail || !last) continue;
+    const endOfContent = anchorTop(pane, tail) + scrollInset;
+    const padding = Math.max(0, anchorTop(pane, last) + pane.clientHeight - endOfContent);
+    tail.style.height = Math.ceil(padding) + "px";
+  }
+}
+function focusRow(id, moveRight=true) {
+  if (packageMode) return focusPackageRow(id,moveRight);
+  if (openEditor) {
+    setNotice("请先应用或取消当前编辑。");
+    return false;
+  }
+  if (!rowElements.has(id)) return;
+  selected = id;
+  for (const [key, item] of rowElements) item.classList.toggle("selected",key === id);
+  const article = rowElements.get(id);
+  const sectionId = article.closest(".row-section").dataset.section;
+  const section = leftSections.get(sectionId);
+  let target;
+  for (const mark of byId("left").querySelectorAll("mark")) {
+    const active = JSON.parse(mark.dataset.rows).includes(id);
+    mark.classList.toggle("target", active);
+    if (active && !target) target = mark;
+  }
+  if (section) align(byId("left"),target || section);
+  if (moveRight) {
+    align(byId("right"),article);
+    article.focus({preventScroll:true});
+  }
+  activateSection(sectionId);
+  renderLawyerPane();
+  return true;
+}
+function sectionRange(pane, sections, index) {
+  const element = sections[index][1];
+  const start = Math.max(0, anchorTop(pane, element));
+  const next = sections[index + 1]?.[1];
+  const end = next ? anchorTop(pane, next) : anchorTop(pane, element) + element.getBoundingClientRect().height;
+  return [start, Math.max(start + 1, end)];
+}
+function syncPanes(side) {
+  if (packageMode) return syncPackagePanes(side);
+  const left = side === "left";
+  const from = byId(side);
+  const to = byId(left ? "right" : "left");
+  const origin = [...(left ? leftSections : rightSections)];
+  const destination = [...(left ? rightSections : leftSections)];
+  if (!origin.length || !destination.length) return;
+  // Contract-level cards have no document anchor and never drag the document.
+  const unpaired = !left && from.querySelector(".row-section[data-section='']");
+  if (unpaired && from.scrollTop >= anchorTop(from, unpaired) - 0.5) {
+    activateSection("");
+    return;
+  }
+  const next = origin.findIndex(([, element]) => anchorTop(from, element) > from.scrollTop + 0.5);
+  const index = next < 0 ? origin.length - 1 : Math.max(0, next - 1);
+  const id = origin[index][0];
+  const matching = destination.findIndex(([key]) => key === id);
+  if (matching < 0) return;
+  const [start, end] = sectionRange(from, origin, index);
+  const fraction = Math.min(1, Math.max(0, (from.scrollTop - start) / (end - start)));
+  const [otherStart, otherEnd] = sectionRange(to, destination, matching);
+  writeScroll(to, otherStart + fraction * (otherEnd - otherStart));
+  activateSection(id);
+}
+function onScroll(side) {
+  const pane = byId(side);
+  if (pane.hidden) return;
+  const programmatic = expectedScroll.get(pane);
+  expectedScroll.delete(pane);
+  if (programmatic !== undefined && Math.abs(programmatic - pane.scrollTop) <= 0.5) return;
+  lastUserSide = side;
+  if (!linked) return;
+  pendingSide = side;
+  if (scrollFrame) return;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = 0;
+    if (linked && pendingSide) syncPanes(pendingSide);
+    pendingSide = "";
+  });
+}
+function detailItem(grid,label,value) {
+  const empty = !value.trim();
+  grid.append(node("dt",label),node("dd",empty ? "留空" : value,empty ? "wrap field-empty" : "wrap"));
+}
+function edits(row) {
+  return model.fields.filter(field => get(row,field) !== originalValue(row,field) || (row.submitted_fields && asText(row.submitted_fields[field]) !== get(row,field)));
+}
+function changesPanel(row) {
+  const changes = edits(row);
+  const details = node("details");
+  details.append(node("summary", changes.length ? "初始值与当前值 · " + changes.length + " 个字段有改动" : "初始值与当前值 · 一致"));
+  details.append(node("p","记录编号　"+row.id,"small"));
+  for (const field of changes) {
+    const item = node("div", null, "change");
+    item.append(node("strong",field),node("p","初始值　" + (originalValue(row,field)||"（空）"),"wrap"));
+    if (row.submitted_fields && asText(row.submitted_fields[field]) !== get(row,field)) {
+      item.append(node("p","同学提交值　" + (asText(row.submitted_fields[field])||"（空）"),"wrap"));
+    }
+    item.append(node("p","当前值　" + (get(row,field)||"（空）"),"wrap"));
+    details.append(item);
+  }
+  return details;
+}
+function notePanel(row, stage, editable) {
+  const review = editable && !packageMode ? reviewData(row,stage) : row[stage] || {reviewed:false,note:""};
+  const panel = node("div",null,"review");
+  const lawyer = stage === "lawyer";
+  const reviewer = lawyer ? "律师" : "同学";
+  panel.append(node("strong",reviewer + "复核" + (editable ? "" : review.reviewed ? " · 已确认" : " · 未确认")));
+  if (editable) {
+    const note = node("textarea");
+    note.rows = 2;
+    note.value = review.note || "";
+    note.setAttribute("aria-label",lawyer ? "律师复核意见" : "同学的意见或修改原因");
+    const checked = node("input");
+    checked.type = "checkbox";
+    checked.checked = isReviewed(row);
+    function updateBadge() {
+      const status = isReviewed(row) ? "已复核" : "未复核";
+      for (const card of [panel.closest(".card"),packageMode ? null : rowElements.get(row.id)]) {
+        const badge = card?.querySelector("[data-reviewed]");
+        if (badge) badge.textContent = status;
+      }
+      if (packageMode) refreshPackageReviewBadges(row,stage);
+      progress();
+    }
+    checked.onchange = () => {
+      if (checked.checked && lawyer && !hasLawyerOpinion(row)) {
+        checked.checked = false;
+        setNotice("请先填写本条律师复核意见，再确认已复核。");
+        note.focus();
+        return;
+      }
+      if (packageMode) row[stage] = review;
+      review.reviewed = checked.checked;
+      changed("复核确认");
+      if (byId("review-status").value) {
+        render(true);
+        return;
+      }
+      updateBadge();
+    };
+    note.oninput = () => {
+      if (packageMode) row[stage] = review;
+      review.note = note.value;
+      dirty = true;
+      if (review.reviewed && (packageMode || (lawyer && !hasLawyerOpinion(row)))) {
+        review.reviewed = checked.checked = false;
+        updateBadge();
+      }
+    };
+    if (packageMode) note.onchange = ()=>changed("复核意见");
+    const label = node("label");
+    label.append(checked,document.createTextNode(" 确认本条已复核"));
+    if (lawyer) panel.append(labelled("律师复核意见（必填）",note),label);
+    else panel.append(label,labelled("意见或修改原因",note));
+  } else {
+    panel.append(node("p", review.note || "（无补充意见）","wrap small"));
+  }
+  return panel;
+}
+function mappingInputs(row, grid) {
+  const contract = choose("bind-contract",[["","（未匹配）"],...model.contracts.map(item => [String(item.id),item.name])]);
+  const rule = choose("bind-rule",[["","（未匹配）"],...[...rulesById.values()].map(item => [String(item.id),[item.stance,item.name].filter(Boolean).join(" · ")])]);
+  const scope = choose("bind-scope",[["","（未注明）"],["slice","有主条款的切片记录"],["full_missing","整份合同的全文缺失判断"]]);
+  const section = node("select");
+  section.id = "bind-section";
+  contract.value = contractById.has(row.contract_id) ? row.contract_id : "";
+  rule.value = rulesById.has(row.rule_id) ? row.rule_id : "";
+  scope.value = row.scope === "full_missing" ? "full_missing" : (row.scope === "slice" || get(row,keyClause)) ? "slice" : "";
+  const populateSections = (value="") => {
+    section.replaceChildren();
+    option(section,"","（不关联具体切片）");
+    currentSections(contract.value).forEach((item,index) => option(section,item.id,item.heading || "切片 " + (index+1)));
+    if (Array.from(section.options).some(item => item.value === value)) section.value = value;
+    section.disabled = scope.value === "full_missing";
+  };
+  populateSections(String(row.section_id ?? resolveSection(row,currentSections(contract.value))));
+  contract.onchange = () => populateSections();
+  scope.onchange = () => { section.disabled = scope.value === "full_missing"; };
+  if (packageMode) scope.disabled = true;
+  if (packageMode && (packageSharedRows.has(row.id) || packagePairByContract.has(row.contract_id))) {
+    contract.disabled = true;
+    if (packageSharedRows.has(row.id)) rule.disabled = scope.disabled = section.disabled = true;
+    else for (const item of rule.options) {
+      if (item.value!==row.rule_id && rulesById.get(item.value)?.stance!==get(row,"立场")) item.disabled = true;
+    }
+  }
+  const panel = node("details",null,"full");
+  const boxes = node("div",null,"edit-grid");
+  boxes.append(labelled("对应合同",contract),labelled("对应专家规则",rule),labelled("记录范围",scope),labelled("定位切片",section));
+  panel.append(node("summary","更正合同、规则或切片定位"),boxes);
+  grid.append(panel);
+  return {
+    read:()=>[contract.value,rule.value,scope.value,section.value],
+    sourceFields:()=>{
+      const source = contractById.get(contract.value);
+      const expertRule = rulesById.get(rule.value);
+      const clause = currentSections(contract.value).find(item=>item.id===section.value);
+      const fields = {};
+      if (source) fields["合同附件名称"] = source.name;
+      if (expertRule) Object.assign(fields,{"风险名称":expertRule.name,"立场":expertRule.stance,
+        "风险等级":expertRule.level,"审查逻辑":expertRule.logic});
+      if (scope.value==="full_missing") fields[keyClause] = "";
+      else if (clause) fields[keyClause] = clause.text;
+      return fields;
+    },
+    restore:values=>{
+      [contract.value,rule.value,scope.value] = values;
+      populateSections(values[3]);
+    },
+    apply:()=>{
+      row.contract_id = contract.value;
+      row.rule_id = rule.value;
+      if (scope.value) row.scope = scope.value;
+      else delete row.scope;
+      if (scope.value === "full_missing" || !section.value) delete row.section_id;
+      else row.section_id = section.value;
+    }
+  };
+}
+function fieldDraft(form,mapping,controls,undo,save,hasSourceChanges) {
+  const history = [];
+  const fields = [...controls.values()];
+  function rememberStep() {
+    const snapshot = [mapping.read(),fields.map(control=>control.value)];
+    if (JSON.stringify(history.at(-1))===JSON.stringify(snapshot)) return;
+    history.push(snapshot);
+    refresh();
+  }
+  function refresh() {
+    undo.disabled = history.length<2;
+    save.disabled = undo.disabled && !hasSourceChanges;
+  }
+  form.addEventListener("input",event=>{
+    if (event.target.tagName!=="SELECT") rememberStep();
+  });
+  form.addEventListener("change",rememberStep);
+  undo.onclick = ()=>{
+    if (history.length<2) return;
+    history.pop();
+    const [bindings,values] = history.at(-1);
+    mapping.restore(bindings);
+    fields.forEach((control,index)=>{ control.value = values[index]; });
+    refresh();
+  };
+  rememberStep();
+}
+function editPanel(row,article,options={}) {
+  const form = node("form");
+  const grid = node("div",null,"edit-grid");
+  const controls = new Map();
+  const mapping = mappingInputs(row,grid);
+  const fixedFields = packageMode ? fixedPackageBindingFields(row) : [];
+  const sourceFields = ()=>Object.entries(mapping.sourceFields()).filter(([field])=>!fixedFields.includes(field));
+  for (const group of fieldGroups) {
+    const groupFields = group.fields.filter(field => model.fields.includes(field));
+    if (!groupFields.length) continue;
+    const fieldset = node("fieldset",null,"edit-grid full");
+    fieldset.append(node("legend",group.title));
+    for (const field of groupFields) {
+      let input;
+      const judgmentReadOnly = packageMode && binaryFields.has(field);
+      const sourceReadOnly = packageMode && packageBoundFields.includes(field);
+      if (judgmentReadOnly) {
+        input = node("input");
+        input.type = "text";
+        input.readOnly = true;
+      } else if (binaryFields.has(field)) {
+        input = node("select");
+        for (const value of ["","是","否"]) option(input,value,value || "（空）");
+        const prior = get(row,field);
+        if (prior && !["是","否"].includes(prior)) option(input,prior,prior);
+      } else if (wideFields.has(field)) {
+        input = node("textarea");
+        input.rows = 3;
+      } else {
+        input = node("input");
+        input.type = "text";
+      }
+      input.value = get(row,field);
+      if (packageMode) input.dataset.field = field;
+      if (sourceReadOnly) input.readOnly = true;
+      if (!packageMode && field === riskField) input.disabled = true;
+      const label = node("label",null,wideFields.has(field) ? "full" : "");
+      const isMissing = row.scope === "full_missing";
+      const checkHints = {
+        [keyRelevant]:isMissing ? "全文没有对应主条款时，相关性记录为“否”。" :
+          judgmentReadOnly ? "条款不相关时，使用「删除风险卡」。" : "看本切片是不是规则实际检查的对象。",
+        [riskField]:judgmentReadOnly ? "请用卡片顶部按钮切换触发状态。" : "结合适用条件、触发条件与排除条件判断。",
+        [keyEvidence]:isMissing ? "全文无主条款时留空。" : "摘录主切片中支持风险判断的原文。相关但无风险时也要摘录能支持判断的原文。"
+      };
+      label.append(node("i",field),input);
+      const hint = sourceReadOnly ? "从对应合同、专家规则或切片带出。" : checkHints[field] || fieldHints[field];
+      if (hint) label.append(node("span",hint,"small"));
+      controls.set(field,input);
+      fieldset.append(label);
+    }
+    grid.append(fieldset);
+  }
+  const save = node("button",options.toolbar ? "应用" : "应用字段修改","primary");
+  save.type = "submit";
+  const cancel = button("取消",() => {
+    if (!options.toolbar && row.added_by && !row.rule_id && Object.keys(row.fields).length === 1) {
+      model.rows = model.rows.filter(item => item.id !== row.id);
+      indexRows();
+    }
+    openEditor = "";
+    if (options.onExit) options.onExit();
+    else render(true);
+  });
+  if (options.toolbar) {
+    form.id = "package-field-form";
+    save.setAttribute("form",form.id);
+    const undo = button("撤回",null);
+    options.toolbar.replaceChildren(undo,cancel,save);
+    form.append(grid);
+    const refreshSourceFields = ()=>{
+      const derived = new Map(sourceFields());
+      for (const field of packageBoundFields) {
+        const input = controls.get(field);
+        if (input) input.value = derived.get(field) ?? get(row,field);
+      }
+    };
+    refreshSourceFields();
+    form.addEventListener("change",event=>{
+      if (event.target.id.startsWith("bind-")) refreshSourceFields();
+    });
+    const hasSourceChanges = sourceFields().some(([field,value])=>value!==get(row,field));
+    fieldDraft(form,mapping,controls,undo,save,hasSourceChanges);
+  } else {
+    const actions = node("div",null,"row-actions");
+    actions.append(save,cancel);
+    form.append(grid,actions);
+  }
+  form.onsubmit = event => {
+    event.preventDefault();
+    if (save.disabled) return;
+    const before = packageMode ? structuredClone(row) : null;
+    const coreChanged = [riskField,keyRelevant,keyEvidence].some(field =>
+      controls.has(field) && controls.get(field).value !== get(row,field));
+    if (coreChanged) row.review_required = true;
+    for (const [field, input] of controls) {
+      if (!input.readOnly && !input.disabled) row.fields[field] = input.value;
+    }
+    if (options.toolbar) Object.assign(row.fields,Object.fromEntries(sourceFields()));
+    mapping.apply();
+    if (options.toolbar && samePackageValue(packageRecordVersion(row),packageRecordVersion(before))) {
+      openEditor = "";
+      options.onExit();
+      setNotice("字段没有变化。");
+      return;
+    }
+    dirty = true;
+    if (packageMode) invalidatePackageReview(row,before);
+    if (requiresReview(row)) {
+      reviewData(row,model.stage).reviewed = false;
+      if (!(packageMode && packagePairByContract.has(row.contract_id)) && !filterRows().includes(row)) resetRiskFilters(row.contract_id);
+    }
+    openEditor = "";
+    changed("编辑标注字段");
+    options.onExit?.();
+    render(true);
+    if (!packageMode) rowElements.get(row.id)?.focus({preventScroll:true});
+    setNotice("字段修改已应用。"+(requiresReview(row) ? "请重新确认这张风险卡。" : "")+(packageMode ? "请导出 ZIP 数据包。" : "请另存 HTML。"));
+  };
+  article.replaceChildren(node("strong","编辑记录　" + (get(row,"风险名称") || row.id)),form);
+}
+function startFieldEdit(row,article) {
+  if (openEditor) return setNotice("请先应用或取消当前编辑。");
+  openEditor = row.id;
+  editPanel(row,article);
+}
+function rowCard(row, sectionId) {
+  const article = node("article",null,"card");
+  article.tabIndex = -1;
+  article.dataset.row = row.id;
+  if (row.id === selected) article.classList.add("selected");
+  const header = node("div",null,"card-head");
+  const risk = get(row,riskField);
+  const fullMissing = row.scope === "full_missing";
+  const badge = node("span",risk === "是" ? (fullMissing ? "缺失风险" : "触发风险") : risk === "否" ? "未触发风险" : "风险值缺失", "badge" + (risk === "是" ? " risk" : risk ? "" : " empty"));
+  const approval = node("span",isReviewed(row) ? "已复核" : "未复核","badge");
+  approval.dataset.reviewed = "";
+  header.append(node("strong",get(row,"风险名称") || "风险名称缺失"),badge);
+  if (requiresReview(row)) header.append(approval);
+  if (fullMissing) header.append(node("span","全文无对应主条款","badge"));
+  if (!contractById.has(row.contract_id) || !rulesById.has(row.rule_id)) header.append(node("span","合同或规则未匹配","badge empty"));
+  const rule = rulesById.get(row.rule_id);
+  const sourceLabel = node("p", [get(row,"立场"),get(row,"风险等级")].filter(Boolean).join(" · "),"small");
+  const primary = node("dl",null,"summary-grid");
+  if (!fullMissing) detailItem(primary,keyEvidence,get(row,keyEvidence));
+  detailItem(primary,"风险说明",get(row,"风险说明"));
+  detailItem(primary,"修订建议",get(row,"修订建议"));
+  const extra = node("details",null,"rule-details");
+  const logic = asText(rule?.logic) || get(row,"审查逻辑");
+  extra.hidden = !logic;
+  extra.append(node("summary","查看审查规则"),node("p",logic,"wrap"));
+  const actions = node("div",null,"row-actions");
+  if (sectionId) actions.append(button("定位原文", () => focusRow(row.id,false)));
+  if (model.stage === "lawyer") actions.append(button("在律师栏复核",() => {
+    if (!focusRow(row.id,false)) return;
+    byId("lawyer-pane").scrollTop = 0;
+    byId("lawyer-pane").querySelector("textarea")?.focus({preventScroll:true});
+  }));
+  if (model.stage === "student") actions.append(button("提出问题",()=>editDiscussion("question",{row})));
+  if (model.stage === "student") {
+    actions.append(button("编辑标注字段",()=>startFieldEdit(row,article)),
+      button("删除风险卡",()=>removeRow(row),"danger"));
+  }
+  article.append(header,sourceLabel,primary,actions,extra,changesPanel(row));
+  const relatedFields = ["关联条款类型","关联条款属性","关联条款原文"].map(field => [field,get(row,field)]);
+  if (relatedFields.some(([,value]) => value.trim())) {
+    const related = node("section",null,"related-clause");
+    const values = node("dl",null,"summary-grid");
+    for (const [field,value] of relatedFields) detailItem(values,field,value);
+    related.append(node("h4","关联条款"),values);
+    actions.before(related);
+  }
+  if (requiresReview(row)) {
+    if (model.stage === "student") {
+      article.append(notePanel(row,"student",true));
+      if (row.lawyer?.note) article.append(notePanel(row,"lawyer",false));
+    } else article.append(notePanel(row,"student",false));
+  }
+  rowElements.set(row.id,article);
+  return article;
+}
+function render(keepScroll=false) {
+  if (packageMode) return renderPackage(keepScroll);
+  const scrollers = [byId("left"),byId("right")];
+  const offset = keepScroll ? scrollers.map(pane => pane.scrollTop) : [0,0];
+  const sections = currentSections();
+  const rows = filterRows();
+  const grouped = new Map(sections.map(section => [section.id,[]]));
+  const absence = [];
+  const unmatched = [];
+  for (const row of rows) {
+    const section = resolveSection(row,sections);
+    if (row.scope === "full_missing") absence.push(row);
+    else if (section) grouped.get(section).push(row);
+    else unmatched.push(row);
+  }
+
+  rowElements.clear();
+  leftSections.clear();
+  rightSections.clear();
+  const left = document.createDocumentFragment();
+  const right = document.createDocumentFragment();
+  for (const section of sections) {
+    const label = section.heading || "正文";
+    const block = node("section",null,"doc-section");
+    if (!section.text.trimStart().startsWith(label) || !section.heading) block.append(node("h3",label));
+    const groupRows = grouped.get(section.id);
+    const sourceText = markedText(section,groupRows);
+    block.append(sourceText);
+    if (model.stage !== "final") {
+      let selectedText="";
+      const add = button("新增风险批注",()=>addAnnotation(section,selectedText));
+      add.addEventListener("pointerdown",event=>{
+        const selection=window.getSelection();
+        selectedText = selection?.rangeCount && sourceText.contains(selection.anchorNode) && sourceText.contains(selection.focusNode) ? selection.toString() : "";
+        event.preventDefault();
+      });
+      block.append(add);
+    }
+    leftSections.set(section.id,block);
+    left.append(block);
+    const group = node("section",null,groupRows.length ? "row-section" : "row-section empty-section");
+    group.dataset.section = section.id;
+    group.append(node("h3", label));
+    if (groupRows.length) groupRows.forEach(row => group.append(rowCard(row,section.id)));
+    else {
+      group.append(node("p","当前筛选下无风险批注","placeholder"));
+      group.append(button("定位本条原文",() => {
+        align(scrollers[0],block);
+        activateSection(section.id);
+      }));
+    }
+    rightSections.set(section.id,group);
+    right.append(group);
+  }
+  for (const [title, entries] of [["整份合同 · 全文缺失判断",absence],["未定位到正文切片",unmatched]]) {
+    if (!entries.length) continue;
+    const group = node("section",null,"row-section");
+    group.dataset.section = "";
+    group.append(node("h3",title));
+    entries.forEach(row => group.append(rowCard(row,"")));
+    right.append(group);
+  }
+  if (!sections.length) left.append(node("p","这里暂无可显示的合同正文。","placeholder"));
+  if (!rows.length) {
+    right.prepend(node("p","当前筛选下没有风险卡。","placeholder"));
+  }
+  pendingSide = "";
+  activeSectionId = "";
+  for (const fragment of [left,right]) {
+    const tail = node("div",null,"scroll-tail");
+    tail.setAttribute("aria-hidden","true");
+    fragment.append(tail);
+  }
+  scrollers[0].replaceChildren(left);
+  scrollers[1].replaceChildren(right);
+  refreshScrollTail();
+  scrollers.forEach((pane,index) => {
+    writeScroll(pane,offset[index]);
+    expectedScroll.set(pane,pane.scrollTop);
+  });
+  if (!keepScroll && byId("scope").value === "no-clause" && absence.length) {
+    align(scrollers[1],scrollers[1].querySelector(".row-section[data-section='']"));
+  }
+  byId("match").textContent = rows.length + " 条";
+  progress();
+  if (!rowElements.has(selected)) selected = rowElements.keys().next().value || "";
+  rowElements.get(selected)?.classList.add("selected");
+  renderLawyerPane();
+}
+function dialogBox(title) {
+  const dialog = node("dialog");
+  dialog.append(button("关闭",()=>dialog.close(),"close"),node("h2",title));
+  dialog.onclose = () => dialog.remove();
+  document.body.append(dialog);
+  dialog.showModal();
+  return dialog;
+}
+function editDiscussion(kind,{row,entry}={}) {
+  if (openEditor) return setNotice("请先应用或取消当前编辑。");
+  if (!contractById.has(contractId)) return setNotice("请先选择实际合同。");
+  const question = kind === "question";
+  const title = question ? "实习生问题" : "律师建议";
+  const dialog = dialogBox(entry ? "编辑" + title : question ? "提出问题" : "新建建议");
+  const input = node("textarea");
+  input.rows = 4;
+  input.value = entry?.text || "";
+  const rowId = entry?.row_id || row?.id;
+  const target = rowById.get(rowId);
+  dialog.append(node("p",target ? discussionSource(target) : "整份合同", "small discussion-source"),labelled(title,input));
+  const message = node("p","","small");
+  dialog.append(message,button("保存" + title,() => {
+    const text = input.value.trim();
+    if (!text) {
+      message.textContent = "请填写" + title + "。";
+      return input.focus();
+    }
+    if (entry) {
+      if (question && entry.text !== text) entry.reviewed = false;
+      entry.text = text;
+    } else {
+      const record = {contract_id:contractId,text};
+      if (packageMode) record.id = crypto.randomUUID();
+      if (rowId) record.row_id = rowId;
+      if (question) {
+        questions.push(record);
+        model.review_questions = questions;
+      } else {
+        suggestions.push(record);
+        model.lawyer_suggestions = suggestions;
+      }
+    }
+    changed(question ? "实习生问题" : "律师建议");
+    dialog.close();
+    renderLawyerPane();
+    setNotice(title + (packageMode ? "已保存，请导出 ZIP 交接。" : "已保存，随下一份 HTML 交接。"));
+  },"primary"));
+  input.focus();
+}
+function discussionSource(row) {
+  const section = currentSections(row.contract_id).find(item => item.id === resolveSection(row,currentSections(row.contract_id)));
+  return [get(row,"风险名称"),get(row,"立场"),section?.heading].filter(Boolean).join(" · ") || row.id;
+}
+function questionReviewed(item) {
+  return item.reviewed === true && typeof item.response === "string" && !!item.response.trim();
+}
+function locateDiscussion(row) {
+  if (openEditor) return setNotice("请先应用或取消当前编辑。");
+  if ((packageMode && packagePairByContract.has(row.contract_id)) || get(row,riskField) === "是") {
+    resetRiskFilters(row.contract_id);
+    if (packageMode) revealPackageRowVersion(row);
+    render(true);
+    focusRow(row.id);
+  } else {
+    const section = resolveSection(row,currentSections());
+    if (section) {
+      align(byId("left"),leftSections.get(section));
+      align(byId("right"),rightSections.get(section));
+      activateSection(section);
+    }
+  }
+}
+function discussionCard(item,kind,editable) {
+  const card = node("article",null,"card");
+  const row = rowById.get(item.row_id);
+  card.append(node("strong",item.text,"wrap"));
+  card.append(node("p",row ? discussionSource(row) : "整份合同","small discussion-source"));
+  if (row && model.stage !== "student") card.append(button("定位关联标注",()=>locateDiscussion(row)));
+  if (kind === "suggestion" && editable) card.append(button("编辑建议",()=>editDiscussion(kind,{entry:item})));
+  if (kind === "question") {
+    const status = node("span",questionReviewed(item) ? "已审核" : "待审核","badge");
+    card.prepend(status);
+    if (editable) {
+      const input = node("textarea");
+      input.rows = 3;
+      input.value = item.response || "";
+      const checkbox = node("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = questionReviewed(item);
+      input.oninput = () => {
+        item.response = input.value;
+        item.reviewed = checkbox.checked = false;
+        status.textContent = "待审核";
+        dirty = true;
+      };
+      if (packageMode) input.onchange = ()=>changed("答复实习生问题");
+      checkbox.onchange = () => {
+        if (checkbox.checked && !input.value.trim()) {
+          checkbox.checked = false;
+          input.focus();
+          return setNotice("请先填写问题的审核答复。");
+        }
+        item.reviewed = checkbox.checked;
+        status.textContent = questionReviewed(item) ? "已审核" : "待审核";
+        changed("确认问题答复");
+      };
+      card.append(labelled("律师审核答复",input),labelled("确认此问题已审核",checkbox));
+    } else if (item.response) card.append(node("p","律师答复　" + item.response,"wrap"));
+    if (model.stage === "student") card.append(button("编辑问题",()=> {
+      card.closest("dialog")?.close();
+      editDiscussion(kind,{entry:item});
+    }));
+  }
+  return card;
+}
+function appendDiscussion(container,editable) {
+  for (const [title,items,kind,empty] of [
+    ["实习生问题",questions,"question","本合同暂无问题。"],
+    ["律师建议",suggestions,"suggestion","本合同暂无建议。"]
+  ]) {
+    const current = items.filter(item=>item.contract_id===contractId);
+    container.append(node("h3",title));
+    if (!current.length) container.append(node("p",empty,"small"));
+    for (const item of current) container.append(discussionCard(item,kind,editable));
+  }
+}
+function renderLawyerPane() {
+  if (packageMode) return;
+  const pane = byId("lawyer-pane");
+  if (!pane) return;
+  const position = pane.scrollTop;
+  const content = node("div",null,"lawyer-content");
+  const row = rowById.get(selected);
+  const editable = model.stage === "lawyer";
+  content.append(node("h3","当前标注"));
+  if (row && rowElements.has(row.id)) {
+    const card = node("article",null,"card");
+    const badge = node("span",isReviewed(row) ? "已复核" : "未复核","badge");
+    badge.dataset.reviewed = "";
+    const head = node("div",null,"card-head");
+    head.append(node("strong",discussionSource(row)),badge);
+    card.append(head,notePanel(row,"lawyer",editable));
+    if (editable) {
+      const actions = node("div",null,"row-actions");
+      actions.append(button("编辑标注字段",()=>startFieldEdit(row,card)),
+        button("删除风险卡",()=>removeRow(row),"danger"));
+      card.append(actions);
+    }
+    content.append(card);
+  } else content.append(node("p","当前筛选下无可复核的风险卡。","small"));
+  appendDiscussion(content,editable);
+  pane.replaceChildren(content);
+  pane.scrollTop = position;
+}
+function remember(row, action, reason) {
+  (row.review_history ||= []).push({action,stage:model.stage,reason,before:{...row.fields},at:new Date().toISOString()});
+  row.review_required = true;
+}
+function sameJudgment(row) {
+  if (!row.rule_id || !row.contract_id) return [row];
+  const sections = currentSections(row.contract_id);
+  const section = resolveSection(row,sections);
+  if (!section && row.scope !== "full_missing") return [row];
+  return model.rows.filter(item => item.contract_id===row.contract_id && item.rule_id===row.rule_id &&
+    (item.matter_id || "")===(row.matter_id || "") &&
+    (row.scope==="full_missing" ? item.scope==="full_missing" : item.scope!=="full_missing" && resolveSection(item,sections)===section));
+}
+function removeRow(row) {
+  if (openEditor) return setNotice("请先应用或取消当前编辑。");
+  const dialog = dialogBox("删除风险卡");
+  const reason = node("textarea");
+  const hasClause = row.scope !== "full_missing";
+  const related = packageMode ? null : choose("remove-relevant",[
+    ["","请选择删除后的情况"],["是","条款相关，但没有触发风险"],["否","条款与这条规则不相关"]
+  ]);
+  const evidence = node("textarea");
+  if (related) {
+    related.value = hasClause ? get(row,keyRelevant) : "否";
+    let relatedEvidence = related.value === "是" ? get(row,keyEvidence) : "";
+    const syncEvidence = () => {
+      evidence.disabled = related.value !== "是";
+      evidence.value = evidence.disabled ? "" : relatedEvidence;
+    };
+    evidence.oninput = () => { relatedEvidence = evidence.value; };
+    related.onchange = syncEvidence;
+    syncEvidence();
+  }
+  dialog.append(labelled("删除原因（必填）",reason));
+  if (packageMode) dialog.append(node("p","删除后按不相关处理，可在「复核记录」查看或恢复。","small"));
+  else if (hasClause) dialog.append(labelled("删除后的情况",related),labelled("支持无风险结论的原文",evidence));
+  const message = node("p","","small");
+  dialog.append(message,button("确认删除风险卡",() => {
+    if (!reason.value.trim()) { message.textContent = "请填写删除原因。"; return reason.focus(); }
+    if (related && !related.value) { message.textContent = "请选择删除后的情况。"; return related.focus(); }
+    for (const part of sameJudgment(row)) {
+      if (packageMode ? !canRemovePackageRow(part) : get(part,riskField)!=="是") continue;
+      const before = packageMode ? structuredClone(part) : null;
+      remember(part,"remove",reason.value.trim());
+      Object.assign(part.fields,{[riskField]:"否",[keyRelevant]:related?.value ?? "否",[keyEvidence]:evidence.value,"风险说明":"","修订建议":""});
+      part.review_required = true;
+      if (packageMode) invalidatePackageReview(part,before);
+      const review = reviewData(part,model.stage);
+      review.reviewed = model.stage === "student";
+      review.note = [review.note,reason.value.trim()].filter(Boolean).join("\n");
+    }
+    changed("删除风险卡");
+    dialog.close();
+    render(true);
+    setNotice(model.stage === "lawyer" ? "风险卡已删除。请在「更多」→「复核记录」确认删除结果。" :
+      "风险卡已删除，删除原因可在「复核记录」查看。");
+  },"primary"));
+}
+function lastRiskRemoval(row) {
+  return (row.review_history || []).findLast(entry=>entry.action==="remove");
+}
+function restoreRiskCard(row,reason="恢复风险判断",dialog=null) {
+  if (openEditor) return setNotice("请先应用或取消当前字段修改。");
+  if (!lastRiskRemoval(row)?.before) return;
+  for (const part of sameJudgment(row)) {
+    const previous = lastRiskRemoval(part);
+    if (!previous?.before || !removedRisk(part)) continue;
+    const before = packageMode ? structuredClone(part) : null;
+    remember(part,"restore",reason);
+    Object.assign(part.fields,previous.before);
+    if (packageMode) invalidatePackageReview(part,before);
+    reviewData(part,model.stage).reviewed = false;
+  }
+  changed("恢复风险卡");
+  if (dialog) {
+    resetRiskFilters(row.contract_id);
+    if (packageMode) revealPackageRowVersion(row);
+    dialog.close();
+    render();
+    focusRow(row.id);
+  } else {
+    render(true);
+  }
+  setNotice("已恢复删除前的标注，请确认本条复核。");
+}
+function showLogs(onlyRowId) {
+  if (openEditor) return setNotice("请先应用或取消当前编辑。");
+  const dialog = dialogBox("复核记录");
+  dialog.setAttribute("aria-label","复核记录");
+  const single = typeof onlyRowId==="string";
+  if (packageMode && !single) appendPackageLog(dialog);
+  const records = single ? model.rows.filter(row=>row.id===onlyRowId) : model.rows.filter(row =>
+    (!packageMode || !packageSharedRows.has(row.id) || packageSharedPrimary.has(row.id)) &&
+    (removedRisk(row) || row.review_history?.length || row.student?.note || row.lawyer?.note || edits(row).length));
+  if (!records.length) dialog.append(node("p","当前没有人工修改或复核意见。","small"));
+  for (const row of records) {
+    const box = node("section",null,"card");
+    box.append(node("strong",[get(row,"合同附件名称"),get(row,"风险名称"),get(row,"立场")].filter(Boolean).join(" · ")));
+    if (packageMode) {
+      const section = currentSections(row.contract_id).find(item=>item.id===row.section_id);
+      const context = [section?.heading || (row.scope==="full_missing" ? "全文缺失风险" : ""),
+        packageSharedRows.has(row.id) ? "两版共用复核" : "",row.id].filter(Boolean).join(" · ");
+      box.append(node("p",context,"small"));
+    }
+    for (const entry of row.review_history || []) {
+      const action = ({remove:"删除风险卡",add:"新增风险批注",restore:"恢复风险卡"})[entry.action] || entry.action;
+      const details = node("details");
+      details.append(node("summary", "操作前标注值"));
+      for (const field of model.fields) details.append(node("p",field+"　"+(asText(entry.before?.[field])||"（空）"),"wrap small"));
+      box.append(node("p",(entry.stage==="lawyer"?"律师":"同学")+" · "+action+"　"+asText(entry.reason),"wrap"),details);
+    }
+    box.append(changesPanel(row));
+    for (const [stage,name] of [["student","同学"],["lawyer","律师"]]) {
+      if (row[stage]?.note) box.append(node("p",name+"意见　"+row[stage].note,"wrap small"));
+    }
+    if (removedRisk(row)) {
+      box.append(node("p",packageMode && get(row,keyRelevant)==="否" ? "当前结论　不相关（已删卡）" : "当前结论　无风险","small"));
+      if (model.stage !== "final") {
+        const note = node("textarea");
+        const review = row[model.stage] || {reviewed:false,note:""};
+        const lawyer = model.stage === "lawyer";
+        note.value = review.note || "";
+        if (lawyer) note.setAttribute("aria-label","律师复核意见");
+        box.append(labelled(lawyer ? (packageMode ? "律师复核意见（选填）" : "律师复核意见（必填）") : "意见或修改原因",note));
+        const confirm = button("确认删除结果",() => {
+          if (!packageMode && lawyer && !hasLawyerOpinion(row)) {
+            note.setCustomValidity("请先填写律师复核意见，再确认删除结果。");
+            note.reportValidity();
+            return;
+          }
+          row[model.stage] = review;
+          review.reviewed = true;
+          changed("确认删除结果");
+          updateConfirmation();
+          if (packageMode) render(true);
+          else progress();
+        });
+        function updateConfirmation() {
+          const confirmed = isReviewed(row);
+          confirm.textContent = confirmed ? "删除结果已确认" : "确认删除结果";
+          confirm.disabled = confirmed;
+        }
+        updateConfirmation();
+        note.oninput = () => {
+          row[model.stage] = review;
+          review.note = note.value;
+          dirty = true;
+          note.setCustomValidity("");
+          if (!packageMode && lawyer && review.reviewed && !hasLawyerOpinion(row)) {
+            review.reviewed = false;
+            updateConfirmation();
+            progress();
+          }
+        };
+        if (packageMode) note.onchange = ()=>changed("删除事项复核意见");
+        box.append(confirm);
+        if (lastRiskRemoval(row)?.before) box.append(button("恢复风险卡",()=>
+          restoreRiskCard(row,note.value.trim() || "恢复风险判断",dialog)));
+      }
+    }
+    dialog.append(box);
+  }
+}
+function selectedClauseEvidence() {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || selection.isCollapsed) return null;
+  for (const [sectionId,block] of leftSections) {
+    const source = block.querySelector(".doc-text");
+    if (source.contains(selection.anchorNode) && source.contains(selection.focusNode)) {
+      return {sectionId,text:selection.toString()};
+    }
+  }
+  return null;
+}
+function addLawyerAnnotation() {
+  const source = selectedClauseEvidence();
+  const sections = currentSections();
+  const row = rowById.get(selected);
+  const sectionId = source?.sectionId || activeSectionId || (row ? resolveSection(row,sections) : "");
+  addAnnotation(sections.find(section=>section.id===sectionId),source?.text || "",true);
+}
+function addAnnotation(section, evidenceText="", chooseSection=false, triggered=true, sourceId=contractId) {
+  if (openEditor) return setNotice("请先应用或取消当前编辑。");
+  if (!contractById.has(sourceId)) return setNotice("请先选择实际合同。");
+  const slice = chooseSection || !!section;
+  const action = triggered ? "新增风险批注" : "新增未触发风险批注";
+  const dialog = dialogBox(slice ? action : "新增全文缺失风险");
+  const ruleSelect = choose("add-rule",[]);
+  const refreshRules = () => {
+    ruleSelect.replaceChildren();
+    option(ruleSelect,"","请选择规则与立场");
+    ruleSelect.disabled = !sourceId;
+    if (!sourceId) return;
+    const allowed = model.applicability?.[sourceId];
+    for (const rule of rulesById.values()) {
+      if (!Array.isArray(allowed) || allowed.includes(rule.id)) option(ruleSelect,rule.id,rule.stance+" · "+rule.name);
+    }
+  };
+  const pair = packageMode && activePackagePair();
+  if (!slice && pair) {
+    const version = choose("add-contract-version",[["","请选择合同版本"],...pair.contracts.map(id=>[id,contractById.get(id).name])]);
+    version.setAttribute("aria-label","合同版本");
+    sourceId = byId("stance").value;
+    version.value = sourceId;
+    version.onchange = () => {
+      sourceId = version.value;
+      refreshRules();
+    };
+    dialog.append(labelled("合同版本",version));
+  }
+  refreshRules();
+  const evidence = node("textarea");
+  if (chooseSection) {
+    const sections = currentSections(sourceId);
+    const sectionSelect = choose("add-section",[["","请选择合同条款"],...sections.map(item=>[item.id,item.heading])]);
+    sectionSelect.setAttribute("aria-label","合同条款");
+    sectionSelect.value = section?.id || "";
+    sectionSelect.onchange = () => {
+      section = sections.find(item=>item.id===sectionSelect.value);
+      evidence.value = "";
+    };
+    dialog.append(labelled("合同条款",sectionSelect));
+  }
+  dialog.append(labelled("正式规则与立场",ruleSelect));
+  if (slice) {
+    evidence.value = evidenceText;
+    if (!chooseSection) dialog.append(node("p",section.heading,"small"));
+    dialog.append(labelled(triggered ? "关键证据（摘自本条原文）" : "关键证据（摘自本条原文，选填）",evidence));
+  }
+  const reason = node("textarea");
+  dialog.append(labelled(triggered ? "新增原因" : "判断说明（选填）",reason));
+  const message = node("p","","small");
+  dialog.append(message,button(triggered ? "保存风险批注" : "保存未触发风险批注",() => {
+    const contract = contractById.get(sourceId);
+    if (!contract) { message.textContent = "请选择合同版本。"; return; }
+    if (slice && !section) { message.textContent = "请选择合同条款。"; return; }
+    const rule = rulesById.get(ruleSelect.value);
+    if (!rule) { message.textContent = "请选择正式规则与立场。"; return; }
+    const excerpt = evidence.value.trim();
+    if (section && ((triggered && !excerpt) || (excerpt && !section.text.includes(excerpt)))) {
+      message.textContent = "请填入本切片中可定位的证据原文。"; return;
+    }
+    if (triggered && !reason.value.trim()) { message.textContent = "请填写新增原因。"; return; }
+    const sections = currentSections(sourceId);
+    const candidates = model.rows.filter(row => row.contract_id === sourceId && row.rule_id === rule.id &&
+      (section ? row.scope!=="full_missing" && resolveSection(row,sections)===section.id :
+       row.scope==="full_missing"));
+    const existing = candidates.find(row => get(row,riskField)==="是" || (!triggered && relatedUntriggered(row.fields)));
+    if (existing) {
+      dialog.close();
+      resetRiskFilters(contractId);
+      if (packageMode) revealPackageRowVersion(existing);
+      render(); focusRow(existing.id); setNotice("该规则及切片已有标注，可直接查看细节。"); return;
+    }
+    if (new Set(candidates.map(row=>row.matter_id || "")).size > 1) {
+      message.textContent = "该规则在本切片含多个独立事项，请用项目中的原始记录编号明确本次批注对应事项后再生成页面。"; return;
+    }
+    const targets = candidates.length ? candidates : [{
+      id:packageMode ? "manual-"+crypto.randomUUID() : "manual-"+Date.now().toString(36)+"-"+model.rows.length,contract_id:sourceId,rule_id:rule.id,
+      fields:Object.fromEntries(model.fields.map(field=>[field,""])),original_fields:{},added_by:model.stage
+    }];
+    if (!candidates.length) model.rows.push(targets[0]);
+    for (const row of targets) {
+      const before = packageMode ? structuredClone(row) : null;
+      remember(row,"add",reason.value.trim());
+      Object.assign(row.fields,{"合同附件名称":contract.name,"风险名称":rule.name,"立场":rule.stance,"风险等级":rule.level,"审查逻辑":rule.logic,
+        [keyClause]:section?.text || "",[keyRelevant]:section ? "是" : "否",[riskField]:triggered ? "是" : "否",[keyEvidence]:section ? excerpt : "",
+        "风险说明":reason.value.trim()});
+      row.scope = section ? "slice" : "full_missing";
+      if (section) row.section_id=section.id;
+      else delete row.section_id;
+      reviewData(row,model.stage).reviewed = false;
+      if (!packageMode && model.stage==="lawyer") reviewData(row,"student").reviewed=false;
+      if (packageMode) invalidatePackageReview(row,before);
+    }
+    indexRows();
+    resetRiskFilters(contractId);
+    if (packageMode) revealPackageRowVersion(targets[0]);
+    changed(action); dialog.close(); render(); focusRow(targets[0].id);
+    setNotice("风险批注已保存，请核对字段和关联拆行并完成复核。");
+  },"primary"));
+}
+function confirmCurrent() {
+  if (openEditor) {
+    setNotice("请先应用或取消当前编辑。");
+    return;
+  }
+  if (packageMode) return confirmAllPackageAnnotations();
+  const item = "张风险卡";
+  const rows = filterRows().filter(row => requiresReview(row) && !isReviewed(row));
+  if (!rows.length) return setNotice("当前筛选没有需要确认的记录。");
+  const missingOpinions = model.stage === "lawyer" ? rows.filter(row => !hasLawyerOpinion(row)).length : 0;
+  if (missingOpinions) return setNotice("当前筛选中有 "+missingOpinions+" 张风险卡缺少律师复核意见，请逐条填写后再确认。");
+  if (!window.confirm("确认已人工复核此合同当前筛选中的 " + rows.length + " "+item+"？")) return;
+  rows.forEach(row => { reviewData(row,model.stage).reviewed = true; });
+  changed("确认当前筛选的风险卡");
+  render(true);
+  setNotice("已确认当前筛选中的 " + rows.length + " "+item+"。");
+}
+function saveHtml(nextStage=model.stage, returning=false) {
+  if (openEditor) {
+    setNotice("请先应用或取消当前编辑。");
+    return;
+  }
+  if (packageMode) return savePackage(nextStage);
+  if (returning && !window.confirm("保存退回版本？律师意见会保留，律师未确认的记录将交同学复查。")) return;
+  if (nextStage !== model.stage && !returning) {
+    const required = model.rows.filter(requiresReview);
+    if (nextStage === "final" && required.some(row => row.student?.reviewed !== true)) {
+      return setNotice("有风险卡还缺同学复核记录，请先保存退回同学版。");
+    }
+    if (nextStage === "final") {
+      const pendingQuestions = questions.filter(item=>!questionReviewed(item)).length;
+      if (pendingQuestions) return setNotice("还有 "+pendingQuestions+" 个实习生问题待审核，请填写答复并确认。");
+      const missingOpinions = required.filter(row => !hasLawyerOpinion(row)).length;
+      if (missingOpinions) return setNotice("还有 "+missingOpinions+" 项缺少律师复核意见，请检查风险卡和「复核记录」里的删除事项。");
+    }
+    const pending = required.filter(row => !isReviewed(row)).length;
+    if (!model.rows.length || pending) {
+      setNotice(pending ? "还有 "+pending+" 项未确认，请检查风险卡和「复核记录」里的删除事项。" : "本批没有标注记录，请先补齐。");
+      return;
+    }
+  }
+  let rows = model.rows;
+  if (model.stage === "student" && nextStage === "lawyer") {
+    rows = model.rows.map(row => ({...row,submitted_fields:{...row.fields}}));
+  } else if (returning) {
+    rows = model.rows.map(row => requiresReview(row) ? ({
+      ...row,
+      student:{...row.student,reviewed:!!row.student?.reviewed && isReviewed(row)},
+      lawyer:{...row.lawyer,reviewed:false}
+    }) : row);
+  }
+  const snapshot = {...model,rows,stage:nextStage};
+  if (model.stage === "lawyer" && nextStage === "final") snapshot.lawyer_opinion_required = true;
+  const copy = document.documentElement.cloneNode(true);
+  copy.querySelector("#app").replaceChildren();
+  copy.querySelector("#review-data").textContent = JSON.stringify(snapshot).replaceAll("<","\\u003c");
+  const text = "<!doctype html>\n" + copy.outerHTML;
+  const name = (model.title || "合同标注复核").replace(/[<>:"/\\|?*]/g,"_") + "_" + (returning ? "退回同学复核" : stageFileNames[nextStage]) + ".html";
+  const url = URL.createObjectURL(new Blob([text], {type:"text/html;charset=utf-8"}));
+  const link = node("a");
+  link.href = url;
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  dirty = false;
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  setNotice("已发起下载「"+name+"」。交接时发送这个文件。");
+}
+function plainEntries(value) {
+  if (Array.isArray(value)) return value;
+  return value ? [value] : [];
+}
+function reportLinks(dialog, title, entries) {
+  const list = node("ul");
+  dialog.append(node("h3",title),list);
+  if (!entries.length) list.append(node("li","包内无此类记录。"));
+  for (const entry of entries) {
+    if (typeof entry !== "object" || !entry) {
+      list.append(node("li",asText(entry),"wrap"));
+      continue;
+    }
+    const item = node("li", null,"wrap");
+    if (entry.check && entry.message) item.append(node("strong",asText(entry.check)),document.createTextNode("　"+entry.message));
+    else {
+      const labels = Object.entries(entry).filter(([key]) => key !== "row_id");
+      for (const [key,value] of labels) {
+        item.append(node("p",key+"　"+(typeof value === "object" ? JSON.stringify(value) : asText(value))));
+      }
+    }
+    if (entry.row_id != null && rowById.has(String(entry.row_id)) && get(rowById.get(String(entry.row_id)),riskField)==="是") {
+      const id = String(entry.row_id);
+      item.append(button("查看记录",() => {
+        dialog.close();
+        if (openEditor) return setNotice("请先应用或取消当前编辑。");
+        resetRiskFilters(rowById.get(id).contract_id);
+        if (packageMode) revealPackageRowVersion(rowById.get(id));
+        render();
+        focusRow(id);
+      }));
+    }
+    list.append(item);
+  }
+}
+function report() {
+  if (openEditor) return setNotice("请先应用或取消当前编辑。");
+  const dialog = node("dialog");
+  dialog.append(button("关闭",()=>dialog.close(),"close"),node("h2","预埋记录与检查报告"),node("p","此处显示生成页面时保存的结果。修改标注后，用包内工具重新校验。","small"));
+  reportLinks(dialog,"预埋风险记录",plainEntries(model.risk_changes));
+  reportLinks(dialog,"检查报告",plainEntries(model.checks));
+  dialog.addEventListener("close",()=>dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+}
+function enablePanelResizing(study) {
+  const panes = [...study.children];
+  const dividers = [];
+  const readWidths = () => panes.map(pane=>pane.getBoundingClientRect().width);
+  function updateValues(widths) {
+    dividers.forEach((divider,index)=>{
+      const pair = widths[index] + widths[index+1];
+      const minimum = Math.min(200,pair/2);
+      divider.setAttribute("aria-valuemin",Math.round(100*minimum/pair));
+      divider.setAttribute("aria-valuemax",Math.round(100*(pair-minimum)/pair));
+      divider.setAttribute("aria-valuenow",Math.round(100*widths[index]/pair));
+    });
+  }
+  function resize(index,widths,nextWidth) {
+    const pair = widths[index] + widths[index+1];
+    const minimum = Math.min(200,pair/2);
+    const next = Math.max(minimum,Math.min(pair-minimum,nextWidth));
+    const result = widths.slice();
+    result[index] = next;
+    result[index+1] = pair-next;
+    study.style.setProperty("--panel-columns",result.map(width=>`minmax(0,${width}fr)`).join(" 12px "));
+    updateValues(result);
+  }
+  panes.slice(0,-1).forEach((pane,index)=>{
+    const divider = node("div",null,"panel-divider");
+    divider.tabIndex = 0;
+    divider.setAttribute("role","separator");
+    divider.setAttribute("aria-orientation","vertical");
+    divider.setAttribute("aria-controls",pane.querySelector(".scroller").id);
+    const names = panes.slice(index,index+2).map(item=>item.querySelector("h2").textContent);
+    divider.setAttribute("aria-label","调整"+names.join("和")+"的宽度");
+    divider.title = "拖动调整宽度，双击恢复默认";
+    divider.onpointerdown = event => {
+      if (event.button !== 0 || divider.hasPointerCapture(event.pointerId)) return;
+      const widths = readWidths();
+      const start = event.clientX;
+      divider.setPointerCapture(event.pointerId);
+      divider.classList.add("dragging");
+      document.body.classList.add("resizing-panels");
+      divider.onpointermove = move => {
+        if (move.pointerId === event.pointerId) resize(index,widths,widths[index]+move.clientX-start);
+      };
+      divider.onlostpointercapture = () => {
+        divider.onpointermove = null;
+        divider.classList.remove("dragging");
+        document.body.classList.remove("resizing-panels");
+      };
+      event.preventDefault();
+    };
+    divider.onkeydown = event => {
+      const widths = readWidths();
+      const targets = {ArrowLeft:widths[index]-24,ArrowRight:widths[index]+24,Home:0,End:Infinity};
+      if (!Object.hasOwn(targets,event.key)) return;
+      event.preventDefault();
+      resize(index,widths,targets[event.key]);
+    };
+    divider.ondblclick = () => {
+      study.style.removeProperty("--panel-columns");
+      updateValues(readWidths());
+    };
+    pane.after(divider);
+    dividers.push(divider);
+  });
+  const observer = new ResizeObserver(()=>updateValues(readWidths()));
+  observer.observe(study);
+}
+function launch() {
+  indexRows();
+  const view = node("div",null,packageMode ? "view package-view" : "view");
+  const header = node("header");
+  const actions = node("div",null,"header-actions");
+  const title = model.contract_type || model.title || "合同标注复核";
+  const heading = node("h1",title);
+  document.title = title + " · " + stageNames[model.stage];
+  if (packageMode) packageHeader(actions);
+  else {
+    if (model.stage !== "lawyer") actions.append(button("复核记录",showLogs));
+    actions.append(button("预埋记录与检查报告",report),button("另存当前 HTML",()=>saveHtml()));
+    if (model.stage === "student") actions.append(button("问题与律师建议",()=> {
+      if (openEditor) return setNotice("请先应用或取消当前编辑。");
+      const dialog = dialogBox("问题与律师建议");
+      dialog.append(button("提出合同问题",()=> {
+        dialog.close();
+        editDiscussion("question");
+      }));
+      appendDiscussion(dialog,false);
+    }),button("保存给律师复核",()=>saveHtml("lawyer"),"primary"));
+    if (model.stage === "lawyer") actions.append(button("保存退回同学版",()=>saveHtml("student",true)),button("保存律师已复核版",()=>saveHtml("final"),"primary"));
+  }
+  header.append(heading,node("span",stageNames[model.stage],"badge"),actions);
+  if (packageMode) heading.title = title;
+  const status = node("p",packageMode ? "修改后请导出 ZIP 数据包。" : model.stage==="final" ? "可交给 Codex 用包内工具重新校验并导出。" : "请另存 HTML 保留本次修改。","status");
+  status.id = "message";
+  status.setAttribute("role","status");
+  if (packageMode) {
+    const info = packageInfo();
+    info.append(status);
+    header.append(info);
+  }
+  const toolbar = node("div",null,"toolbar");
+  const attachments = model.contracts.flatMap(item=>{
+    const pair = packageMode && packagePairByContract.get(item.id);
+    if (pair && pair.contracts[0]!==item.id) return [];
+    return [[String(item.id),pair ? packagePairName(pair) : item.name]];
+  });
+  if (!packageMode || model.rows.some(row=>!contractById.has(row.contract_id))) {
+    attachments.push(["","未匹配到合同的记录"]);
+  }
+  const contract = choose("contract",attachments);
+  const contractLabel = packageMode ? "合同附件名称" : "合同";
+  contract.setAttribute("aria-label",contractLabel);
+  contract.value = contractId;
+  const stances = [...new Set(model.rows.map(row=>get(row,"立场")).filter(Boolean))].sort();
+  const stance = choose("stance",[["","全部"],...(packageMode ? packageVersionOptions() : stances.map(value=>[value,value]))]);
+  stance.setAttribute("aria-label","立场");
+  const changeStatus = packageMode ? choose("change-status",[["","全部"],["changed","有改动"],["unchanged","未改动"]]) : null;
+  changeStatus?.setAttribute("aria-label","改动状态");
+  const scope = choose("scope",packageMode ?
+    [["review","全部类型"],["related-hit","相关触发"],["related-clear","相关未触发"],["no-clause","全文缺失风险"]] :
+    [["review","全部类型"],["slice","触发风险"],["no-clause","缺失风险"]]);
+  const reviewStatus = choose("review-status",[["","全部状态"],["unreviewed","未复核"],["reviewed","已复核"]]);
+  scope.setAttribute("aria-label","风险类型");
+  reviewStatus.setAttribute("aria-label","复核状态");
+  const search = node("input");
+  search.id = "search";
+  search.type = "search";
+  search.placeholder = "风险名称、证据或记录号";
+  const sync = node("input");
+  sync.type = "checkbox";
+  sync.checked = true;
+  sync.onchange = () => {
+    linked = sync.checked;
+    if (linked) syncPanes(lastUserSide);
+  };
+  const reviewFilter = labelled(packageMode ? "当前栏复核状态" : "复核状态",reviewStatus);
+  reviewFilter.hidden = packageMode && model.stage==="final";
+  toolbar.append(labelled(contractLabel,contract),labelled("立场",stance),labelled("风险类型",scope),reviewFilter);
+  if (changeStatus) toolbar.append(labelled("改动状态",changeStatus));
+  toolbar.append(labelled("搜索",search),labelled("联动滚动",sync));
+  const study = node("main",null,hasLawyerPane ? "study with-lawyer" : "study");
+  for (const [side,label] of [["left","合同原文"],["right","实习生标注与复核"]]) {
+    const pane = node("section",null,"pane");
+    const heading = node("div",null,"pane-heading");
+    heading.append(node("h2",label));
+    if (side === "right") {
+      const tools = node("span",null,"toolbar-line");
+      const match = node("span",null,"small");
+      match.id = "match";
+      tools.append(match);
+      if (!packageMode || model.stage==="student") tools.append(reviewProgressLabel());
+      if (model.stage === "student") {
+        const commands = [button("新增全文缺失风险",()=>addAnnotation(null)),button(packageMode ? "确认所有未复核的标注" : "确认当前筛选的风险卡",confirmCurrent)];
+        if (packageMode) tools.append(packageMenu("操作", [...commands,button("提出合同问题",()=>editDiscussion("question"))]));
+        else tools.append(...commands);
+      }
+      heading.append(tools);
+    }
+    const scroller = node("div",null,"scroller");
+    scroller.id = side;
+    scroller.setAttribute("tabindex","0");
+    scroller.setAttribute("aria-label",label);
+    scroller.addEventListener("scroll",()=>onScroll(side),{passive:true});
+    scroller.addEventListener("toggle",refreshScrollTail,true);
+    pane.append(heading,scroller);
+    study.append(pane);
+  }
+  if (hasLawyerPane) {
+    const pane = node("section",null,"pane");
+    const heading = node("div",null,"pane-heading");
+    heading.append(node("h2","律师复核"));
+    const tools = node("div",null,"toolbar-line");
+    if (packageMode && model.stage!=="student") tools.append(reviewProgressLabel());
+    if (model.stage === "lawyer") {
+      const commands = [button("新增全文缺失风险",()=>addAnnotation(null)),
+        button(packageMode ? "确认所有未复核的标注" : "确认当前筛选的风险卡",confirmCurrent)];
+      if (packageMode) tools.append(packageMenu("操作",commands));
+      else {
+        const add = button("新增风险批注",addLawyerAnnotation);
+        add.onpointerdown = event => { if (selectedClauseEvidence()) event.preventDefault(); };
+        tools.append(add,...commands,button("新建建议",()=>editDiscussion("suggestion")),button("复核记录",showLogs));
+      }
+    }
+    if (tools.children.length) heading.append(tools);
+    const scroller = node("div",null,"scroller");
+    scroller.id = "lawyer-pane";
+    scroller.tabIndex = 0;
+    scroller.setAttribute("aria-label","律师复核");
+    if (packageMode) {
+      scroller.addEventListener("scroll",()=>onScroll("lawyer-pane"),{passive:true});
+      scroller.addEventListener("toggle",refreshScrollTail,true);
+    }
+    pane.append(heading,scroller);
+    study.append(pane);
+  }
+  if (packageMode) view.append(header,toolbar,study);
+  else view.append(header,status,toolbar,study);
+  root.append(view);
+  enablePanelResizing(study);
+  const resize = new ResizeObserver(refreshScrollTail);
+  resize.observe(byId("left"));
+  resize.observe(byId("right"));
+  if (packageMode) resize.observe(byId("lawyer-pane"));
+  const filters = [contract,stance,scope,reviewStatus,changeStatus,search].filter(Boolean);
+  for (const input of filters) input.addEventListener(input===search ? "input" : "change",() => {
+    if (openEditor) {
+      input.value = input.dataset.past || "";
+      return setNotice("请先应用或取消当前编辑，再切换筛选。");
+    }
+    const versionChange = packageMode && input===stance;
+    const keepScroll = versionChange || input===changeStatus;
+    const anchor = activeSectionId;
+    if (keepScroll) {
+      for (const role of [...packageDetailPages.keys()]) closePackageDetail(role);
+      input.focus({preventScroll:true});
+    }
+    if (versionChange) setPackageVersionFilter(input.value);
+    if (input===contract) {
+      if (packageMode) configurePackageContract(contract.value);
+      else contractId = contract.value;
+    }
+    input.dataset.past = input.value;
+    selected = "";
+    lastUserSide = "left";
+    render(keepScroll);
+    if (versionChange && input.value) animatePackageFlip(leftSections.has(anchor) ? anchor : leftSections.keys().next().value);
+  });
+  for (const input of filters) input.dataset.past = input.value;
+
+  render();
+}
+window.addEventListener("beforeunload",event => {
+  if (openEditor || dirty) {
+    event.preventDefault();
+    event.returnValue = true;
+  }
+});
+if (packageMode) {
+  bootPackage();
+} else if (isTemplate) {
+  const start = node("main",null,"template-start");
+  const examples = node("nav");
+  examples.setAttribute("aria-label","复核演示");
+  const link = node("a","打开完整字段与滚动验收");
+  link.href = "../试用材料/完整字段与滚动验收.html";
+  examples.append(link);
+  start.append(node("h1","合同标注复核"),node("p","当前文件是生成模板。可从验收页完成实习生复核，再保存交接版打开律师三栏。正式复核请打开对应批次的 HTML。"),examples);
+  root.append(start);
+} else {
+  launch();
+}
+</script>
+</body>
+</html>
