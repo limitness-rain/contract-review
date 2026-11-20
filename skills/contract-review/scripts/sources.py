@@ -135,10 +135,18 @@ def cell_links(cell):
 
 
 def resolve(contract_type):
+    labels = {"plan":"计划表", "tasks":"任务管理表", "samples":"合同样本库"}
+
+    def read_source(kind):
+        try:
+            return class_record(kind, contract_type)
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError(f"读取「{labels[kind]}」超时，请重试。") from exc
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            raise ValueError(f"读取「{labels[kind]}」失败：{exc}") from exc
+
     with ThreadPoolExecutor(max_workers=3) as pool:
-        plan, tasks, samples = pool.map(
-            lambda kind: class_record(kind, contract_type), TABLES,
-        )
+        plan, tasks, samples = pool.map(read_source, TABLES)
     if not plan:
         raise ValueError(f"计划表里没有找到合同类型“{contract_type}”。请使用表里的完整名称。")
     annotations = cell_links(plan.get("标注和评测集"))
@@ -281,6 +289,40 @@ def filename_for_attachment(name):
     return basename
 
 
+def download_attachment(item, target, record_id):
+    filename = filename_for_attachment(item["name"])
+    token = item["file_token"]
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]+", token):
+        raise ValueError("附件 ID 不是可识别的飞书文件标识。")
+    # Separate paths prevent duplicate or reserved filenames from replacing each other.
+    folder = target / token
+    folder.mkdir(parents=True, exist_ok=True)
+    local_file = folder / ("合同" + Path(filename).suffix.lower())
+    if not local_file.exists():
+        with TemporaryDirectory(dir=folder) as temporary:
+            run_cli("base", "+record-download-attachment", "--base-token", BASE,
+                    "--table-id", TABLES["samples"][0], "--record-id", record_id,
+                    "--file-token", token, "--output", local_file.name, "--format", "json",
+                    cwd=temporary)
+            downloaded = Path(temporary) / local_file.name
+            if not downloaded.is_file():
+                raise ValueError("飞书命令返回成功，但未收到附件文件。")
+            content = read_attachment(downloaded, item.get("size"))
+            downloaded.replace(local_file)
+    else:
+        content = read_attachment(local_file, item.get("size"))
+    return {**item, "local_path":str(local_file), "sha256":hashlib.sha256(content).hexdigest()}
+
+
+def read_attachment(path, expected_size):
+    content = path.read_bytes()
+    if not content:
+        raise ValueError("附件是空文件，请重新上传有效文件。")
+    if expected_size and expected_size != len(content):
+        raise ValueError(f"附件长度不一致，预期 {expected_size} 字节，实际 {len(content)} 字节。")
+    return content
+
+
 def download(index_path, version, out_dir, requested=None):
     index = json.loads(read_json(index_path))
     record_id = index["record_ids"]["samples"]
@@ -288,32 +330,26 @@ def download(index_path, version, out_dir, requested=None):
     if not isinstance(record_id, str) or not re.fullmatch(r"rec[A-Za-z0-9]+", record_id) or not source:
         raise ValueError(f"样本库的 {version} 附件为空，请核对资料。")
     tokens = set(requested or [])
-    if tokens - {item["file_token"] for item in source}:
+    if tokens - {item.get("file_token") for item in source}:
         raise ValueError("指定的附件不在本版本的样本库记录中。")
-    selected = [item for item in source if not tokens or item["file_token"] in tokens]
+    selected = [item for item in source if not tokens or item.get("file_token") in tokens]
     target = Path(out_dir).resolve() / version
-    filenames = [filename_for_attachment(item["name"]) for item in selected]
-    manifest = []
-    for filename, item in zip(filenames, selected):
-        # One folder per attachment keeps duplicate original filenames and filenames
-        # with Windows-reserved stems from silently replacing each other.
-        token = item["file_token"]
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]+", token):
-            raise ValueError("附件 ID 不是可识别的飞书文件标识。")
-        folder = target / token
-        folder.mkdir(parents=True, exist_ok=True)
-        suffix = Path(filename).suffix.lower()
-        local_file = folder / ("合同" + suffix)
-        if not local_file.exists():
-            run_cli("base", "+record-download-attachment", "--base-token", BASE,
-                    "--table-id", TABLES["samples"][0], "--record-id", record_id,
-                    "--file-token", token, "--output", local_file.name, "--format", "json",
-                    cwd=folder)
-        content = local_file.read_bytes()
-        if item.get("size") and item["size"] != len(content):
-            raise ValueError(f"“{item['name']}”的附件长度不一致。请核对文件后重新下载到空目录。")
-        manifest.append({**item, "local_path": str(local_file), "sha256": hashlib.sha256(content).hexdigest()})
-    save_json(target / "下载清单.json", {"source_record": record_id, "version": version, "files": manifest})
+    files, failures = [], []
+    for position, item in enumerate(selected, 1):
+        try:
+            files.append(download_attachment(item, target, record_id))
+        except (ValueError, OSError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+            name = item.get("name") or f"第 {position} 个附件"
+            if isinstance(exc, subprocess.TimeoutExpired):
+                reason = "下载超时，请重试。"
+            elif isinstance(exc, (KeyError, TypeError)):
+                reason = "飞书附件信息不完整，请检查样本库中的附件。"
+            else:
+                reason = str(exc)
+            failures.append({"name":name, "reason":reason})
+    manifest = {"source_record":record_id, "version":version, "files":files, "failures":failures}
+    save_json(target / "下载清单.json", manifest)
+    return manifest
 
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -671,7 +707,10 @@ def main():
         if args.command == "resolve":
             save_json(args.out, resolve(args.type.strip()))
         elif args.command == "download":
-            download(args.index, args.versions, args.out, args.file_token)
+            result = download(args.index, args.versions, args.out, args.file_token)
+            if result["failures"]:
+                reasons = "\n".join(f"「{item['name']}」：{item['reason']}" for item in result["failures"])
+                raise ValueError("附件取件失败。\n"+reasons)
         elif args.command == "docx":
             save_json(args.out, docx_contract(args.path, args.id, args.name))
         elif args.command == "table":

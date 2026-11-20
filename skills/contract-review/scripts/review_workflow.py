@@ -63,15 +63,44 @@ def has_annotation_values(values):
     return any(review.value_of(values.get(field)).strip() for field in review.FIELDS)
 
 
-def fetched_contracts(index_path, index, names, output):
-    requested = {normalize("NFC", name) for name in names}
-    if not index["attachments"]["evaluation"]:
-        raise ValueError("样本库「用于评测的合同」字段没有附件")
-    sources.download(index_path, "evaluation", output)
-    files = review.read_data(output / "evaluation" / "下载清单.json")["files"]
-    available = {normalize("NFC", item["name"]) for item in files}
-    return files, sorted(requested - available), [item["name"] for item in files
-                                                 if normalize("NFC", item["name"]) not in requested]
+def fetch_contracts(index_path, index, table, output, report):
+    issues = report["issues"]
+    evaluation = index["attachments"]["evaluation"]
+    if not evaluation:
+        issues.append("合同样本库的「用于评测的合同」没有附件，请补齐实际用于标注的合同原文。")
+    if table:
+        requested = {normalize("NFC", review.value_of(row.get(review.CONTRACT))) for row in table["rows"]}
+        if any(not name.strip() for name in requested):
+            issues.append("标注集存在空白的「合同附件名称」，请补齐后重新取件。")
+            requested = {name for name in requested if name.strip()}
+        declared = {normalize("NFC", item["name"]) for item in evaluation if item.get("name")}
+        missing = sorted(requested - declared)
+        if missing:
+            report["missing_contracts"] = missing
+            issues.append("标注集引用的合同未挂在「用于评测的合同」字段：" + "、".join(missing))
+    if evaluation and report["route"] not in {"pending_initial", "unknown_initial"}:
+        downloaded = sources.download(index_path, "evaluation", output)
+        report["contracts"] = downloaded["files"]
+        if downloaded["failures"]:
+            report["failed_attachments"] = downloaded["failures"]
+            issues.extend(f"合同附件「{item['name']}」下载失败：{item['reason']}" for item in downloaded["failures"])
+        if table:
+            report["without_annotations"] = [item["name"] for item in downloaded["files"]
+                                             if normalize("NFC", item["name"]) not in requested]
+
+
+def finish_fetch(output, report):
+    report["status"] = "failed" if report["issues"] else "ready"
+    path = output / "取件结果.json"
+    write_report(path, report)
+    if report["status"] == "failed":
+        state = report.get("initial_status") or "未确认"
+        print(f"取件失败｜{report['contract_type']}｜初标状态：{state}", file=sys.stderr)
+        for issue in report["issues"]:
+            print(f"- {issue}", file=sys.stderr)
+        print("材料补齐或授权恢复后请重新取件；当前不能生成初始 ZIP 或复核页。", file=sys.stderr)
+    print(path)
+    return report
 
 
 def fetch(args):
@@ -81,9 +110,9 @@ def fetch(args):
     output.mkdir(parents=True, exist_ok=False)
     report = {"contract_type":index["contract_type"], "initial_status":index["statuses"]["initial"],
               "route":route, "record_ids":index["record_ids"], "table_urls":index.get("table_urls", {}), "issues":[]}
-    stage = {"missing_completed":"计划表显示初标已完成，但缺少可读取的标注集入口。请补链接、附件或对应访问权限。",
-             "pending_initial":"已识别为初标待处理。等待双立场预埋和初标规则。",
-             "unknown_initial":"初标状态无法确认。请核对计划表与标注集链接。"}
+    stage = {"missing_completed":"计划表显示初标已完成，但「标注和评测集」没有可用链接。请补本批标注集链接或文件。",
+             "pending_initial":"当前批次尚无标注集，计划表初标未完成。请在初标完成并挂上标注集后重试，或提供本批已有的标注集。",
+             "unknown_initial":"未找到标注集链接，且初标状态无法确认。请核对计划表「初标状态」和「标注和评测集」。"}
     table = None
     if route in stage:
         report["issues"].append(stage[route])
@@ -105,22 +134,13 @@ def fetch(args):
         except MATERIAL_ERRORS as exc:
             report["route"] = "missing_completed" if report["initial_status"] == "已完成" else "materials_needed"
             report["issues"].append(f"标注集入口 {target or index['annotation_urls']}：{exc}")
+    try:
+        fetch_contracts(args.index, index, table, output, report)
+    except MATERIAL_ERRORS as exc:
+        report["issues"].append(f"读取合同样本库附件失败：{exc}")
     if route not in {"pending_initial", "unknown_initial"}:
-        try:
-            names = [review.value_of(row[review.CONTRACT]) for row in table["rows"]] if table else []
-            files, missing, unannotated = fetched_contracts(args.index, index, names, output)
-            report["contracts"] = files
-            if table:
-                report["without_annotations"] = unannotated
-            if "" in missing:
-                report["issues"].append("标注集存在空合同附件名称")
-                missing.remove("")
-            if missing:
-                report["issues"].append("标注集引用的下列合同不在「用于评测的合同」字段中：" + "、".join(missing))
-        except MATERIAL_ERRORS as exc:
-            report["issues"].append(f"合同附件：{exc}")
-        for slot, urls in index.get("rule_urls", {}).items():
-            override = args.rule if slot == "整理好的规则" else args.other_rule
+        for slot, override in (("整理好的规则", args.rule), ("另一方立场规则", args.other_rule)):
+            urls = index.get("rule_urls", {}).get(slot, [])
             if not urls and not override:
                 report["issues"].append(f"任务管理表缺正式规则链接：{slot}")
                 continue
@@ -133,23 +153,25 @@ def fetch(args):
                 report.setdefault("rules", []).append(str(dest))
             except MATERIAL_ERRORS as exc:
                 report["issues"].append(f"{slot} {target or urls}：{exc}")
-        if table:
-            report["route"] = "materials_needed" if report["issues"] else "type_check_required"
-    write_report(output / "取件结果.json", report)
-    print(output / "取件结果.json")
+    if table:
+        report["route"] = "materials_needed" if report["issues"] else "type_check_required"
+    return finish_fetch(output, report)
 
 
 def collect(args):
     output = args.out.resolve()
     output.mkdir(parents=True, exist_ok=False)
     index = output / "材料索引.json"
-    discover(args.type, index)
-    fetch(argparse.Namespace(index=index, out=output / "取件", annotation=args.annotation,
-                             rule=args.rule, other_rule=args.other_rule))
-    receipt = review.read_data(output / "取件" / "取件结果.json")
-    if receipt["route"] != "type_check_required":
-        print("材料待核对，详见取件结果。")
-        return
+    try:
+        discover(args.type, index)
+    except MATERIAL_ERRORS as exc:
+        finish_fetch(output / "取件", {"contract_type":args.type, "initial_status":None,
+                                        "route":"discovery_failed", "issues":[str(exc)]})
+        return 1
+    receipt = fetch(argparse.Namespace(index=index, out=output / "取件", annotation=args.annotation,
+                                       rule=args.rule, other_rule=args.other_rule))
+    if receipt["status"] == "failed":
+        return 1
     checks = [{"path":item["local_path"], "name":item["name"], "sha256":item["sha256"],
                "file_token":item["file_token"], "match":None, "reason":""} for item in receipt["contracts"]]
     path = output / "类型核验模板.json"
@@ -240,7 +262,8 @@ def prepare(args):
         materials = review.read_data(args.materials)
         if (materials["contract_type"] != args.type or materials["route"] != "type_check_required"
                 or materials.get("issues")):
-            raise ValueError("取件结果仍有缺项或与本合同类型不符，请先核对材料。")
+            reasons = "\n".join(materials.get("issues") or [])
+            raise ValueError("取件结果仍有缺项或与本合同类型不符，请先核对材料。"+("\n"+reasons if reasons else ""))
         fetched = {(str(Path(item["local_path"]).resolve()), item["name"], item["sha256"], item["file_token"])
                    for item in materials["contracts"]}
         reviewed = {(str(Path(item["path"]).resolve()), item["name"], item["sha256"], item.get("file_token"))
@@ -560,7 +583,9 @@ def main():
     if args.command == "discover":
         discover(args.type, args.out)
         return 0
-    return {"fetch":fetch, "collect":collect, "prepare":prepare, "entry":entry, "receive":receive,
+    if args.command == "fetch":
+        return int(fetch(args)["status"] == "failed")
+    return {"collect":collect, "prepare":prepare, "entry":entry, "receive":receive,
             "preflight":preflight, "publish":publish}[args.command](args) or 0
 
 
