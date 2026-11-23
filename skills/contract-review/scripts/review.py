@@ -193,6 +193,33 @@ def read_xlsx(path, require_annotation_sheet=False):
             yield f"row-{row.get('r')}", {name: items.get(col, "") for col, name in header.items()}
 
 
+def card_type(fields):
+    relevant, trigger = fields.get(REL), fields.get(HIT)
+    has_clause = bool(fields.get(CLAUSE, "").strip())
+    if trigger not in {"是", "否"}:
+        return ""
+    if has_clause and relevant == "是":
+        return "related-hit" if trigger == "是" else "related-clear"
+    if not has_clause and relevant == "否" and not fields.get(CLAUSE_TYPE, "").strip():
+        return "no-clause" if trigger == "是" else "missing-clear"
+    if has_clause and relevant == "否" and trigger == "否":
+        return "unrelated"
+    return ""
+
+
+def card_blank_fields(card):
+    explanation = (EXPLAIN, FIX)
+    if card == "related-clear":
+        return explanation
+    if card == "no-clause":
+        return (EVIDENCE,)
+    if card == "missing-clear":
+        return (EVIDENCE, *explanation)
+    if card == "unrelated":
+        return (EVIDENCE, ATYPE, ATTR, ASSOCIATED, *explanation)
+    return ()
+
+
 def no_attention(fields):
     evidence = (fields or {}).get(EVIDENCE)
     return bool(fields and fields.get(REL) == "否" and fields.get(HIT) == "否"
@@ -222,11 +249,10 @@ def attach_rows(project, contracts, rules, label_path):
         r = by_rule[(fields[RISK], fields[STANCE])]
         entry = {"id": row_id, "fields": fields, "contract_id": c[0]["id"] if len(c) == 1 else "",
                  "rule_id": r[0]["id"] if len(r) == 1 else ""}
-        if not fields[CLAUSE].strip() and fields[REL] == "否":
-            if fields[HIT] == "是" or no_attention(fields):
-                entry["scope"] = "full_missing"
-            elif not fields[EVIDENCE]:
-                entry["scope"] = "unlinked"
+        if card_type(fields) in {"no-clause", "missing-clear"}:
+            entry["scope"] = "full_missing"
+        elif not fields[CLAUSE].strip():
+            entry["scope"] = "unlinked"
         project["rows"].append(entry)
     return project
 
@@ -305,15 +331,21 @@ def validate(project, contracts, rules, final=False):
         section_id = row.get("section_id") or full_texts.get(c_id, {}).get(clause)
         group = (c_id, r_id, row.get("matter_id", ""))
         scope = row.get("scope") or ("slice" if clause else "unlinked")
+        card = card_type(f)
         if scope == "unlinked" and (paths.get(group, {}).get("mode") == "full_missing"
-                                    or (not clause.strip() and f[REL] == "否" and (f[HIT] == "是" or no_attention(f)))):
+                                    or card in {"no-clause", "missing-clear"}):
             scope = "full_missing"
+        for field in card_blank_fields(card):
+            if f[field].strip() and not (field == EVIDENCE and card == "no-clause"):
+                add(row_id, FORMAT, "按当前卡片类型该字段应留空，原始值保留供核对", False, field=field)
         if scope == "full_missing":
             if clause or (evidence.strip() and not no_attention(f)) or f[REL] != "否" or row.get("section_id"):
                 add(row_id, FORMAT, "合同级记录相关性填否，主条款和切片定位留空。全文缺失风险的关键证据留空")
             if f[CLAUSE_TYPE]:
                 add(row_id, FORMAT, "全文缺失独立记录没有主切片，条款类型留空")
         else:
+            if clause and f[REL] == "否" and f[HIT] == "是":
+                add(row_id, FORMAT, "有主条款且触发风险时，相关性应填是", field=REL)
             if not clause:
                 add(row_id, JUDGMENT, "无主切片，需用规则及全文核对是否为独立全文缺失记录")
             elif contract and selected[c_id].get(section_id) != clause:

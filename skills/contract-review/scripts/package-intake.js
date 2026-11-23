@@ -468,8 +468,8 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
       if (!selected.has(f[clauseKey])) selected.set(f[clauseKey],row.id);
     } else {
       requirePackage(f[clauseKey]==="" && !f[categoryKey] && f[relevantKey]==="否" &&
-        (!f[evidenceKey].trim() || packageCardType(f)==="no-attention"),
-        where+"缺少主条款原文。合同级标注的相关性须为「否」，条款类型留空；有证据的未触发记录显示为「无需关注」。");
+        (f[triggerKey]==="否" || !f[evidenceKey].trim()),
+        where+"缺少主条款原文。全文缺失标注的相关性须为「否」，条款类型留空；关键证据应留空。");
       row.scope = "full_missing";
     }
   }

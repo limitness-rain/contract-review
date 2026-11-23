@@ -28,17 +28,32 @@ const requirePackage = (condition,message)=>{ if (!condition) throw new Error(me
 function packageCardType(fields) {
   const relevant = fields?.["条款与规则是否相关"];
   const trigger = fields?.["是否触发该风险"];
-  const evidence = fields?.["风险判断关键证据"];
-  if (relevant==="是" && trigger==="是") return "related-hit";
-  if (relevant==="是" && trigger==="否") return "related-clear";
-  if (relevant==="否" && trigger==="是") return "no-clause";
-  if (relevant==="否" && trigger==="否" && typeof evidence==="string" && evidence.trim()) return "no-attention";
+  const hasClause = !!fields?.["条款原文"]?.trim();
+  if (trigger!=="是" && trigger!=="否") return "";
+  if (hasClause && relevant==="是") return trigger==="是" ? "related-hit" : "related-clear";
+  if (!hasClause && relevant==="否" && !fields?.["条款类型"]?.trim()) return trigger==="是" ? "no-clause" : "missing-clear";
+  if (hasClause && relevant==="否" && trigger==="否") return "unrelated";
   return "";
 }
 
 function packageUntriggeredCard(fields) {
-  const type = packageCardType(fields);
-  return type==="related-clear" || type==="no-attention";
+  // Preserve confirmation requirements for records reviewed under the previous rules.
+  const evidence = fields?.["风险判断关键证据"];
+  return fields?.["是否触发该风险"]==="否" && (fields["条款与规则是否相关"]==="是" ||
+    (fields["条款与规则是否相关"]==="否" && typeof evidence==="string" && !!evidence.trim()));
+}
+
+function packageCardBlankFields(type) {
+  const explanation = ["风险说明","修订建议"];
+  if (type==="related-clear") return explanation;
+  if (type==="no-clause") return ["条款类型","风险判断关键证据"];
+  if (type==="missing-clear") return ["条款类型","风险判断关键证据",...explanation];
+  if (type==="unrelated") return ["风险判断关键证据","关联条款类型","关联条款属性","关联条款原文",...explanation];
+  return [];
+}
+function packageIsFullMissing(row) {
+  return row.scope==="full_missing" || (row.scope!=="slice" &&
+    ["no-clause","missing-clear"].includes(packageCardType(row.fields)));
 }
 
 function missingPackageRuleFields(rows) {
