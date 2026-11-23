@@ -1312,7 +1312,7 @@ function bootPackage(message="导入已有 ZIP，或用合同和 AI 标注集生
     open.disabled = !incoming || (incoming.project.stage!=="final" && !name.value.trim());
   }
   name.oninput = updateOpen;
-  async function inspect(file,alreadyConfirmed=false,embedded=false) {
+  async function inspect(file,alreadyConfirmed=false) {
     const attempt = ++importAttempt;
     incoming = null;
     preview.hidden = true;
@@ -1332,18 +1332,9 @@ function bootPackage(message="导入已有 ZIP，或用合同和 AI 标注集生
       preview.hidden = false;
       identity.hidden = stage==="final";
       status.textContent = "";
-      if (embedded) {
-        heading.textContent = loaded.project.contract_type || loaded.project.title || "合同复核工具";
-        lead.textContent = stage==="final" ? "律师终版已加载，确认后进入只读验收。" :
-          "本批数据包已加载，填写署名后确认进入。";
-        document.title = heading.textContent+" · "+stageNames[stage];
-      }
       updateOpen();
     } catch (error) {
-      if (attempt===importAttempt) {
-        if (embedded) showFileControls();
-        status.textContent = "导入失败。"+error.message;
-      }
+      if (attempt===importAttempt) status.textContent = "导入失败。"+error.message;
     }
   }
   input.onchange = ()=>{
@@ -1383,25 +1374,10 @@ function bootPackage(message="导入已有 ZIP，或用合同和 AI 标注集生
     importMode.setAttribute("aria-pressed",String(!creating));
     createMode.setAttribute("aria-pressed",String(creating));
   }
-  function showFileControls() {
-    modes.hidden = fileRow.hidden = zipLabel.hidden = false;
-  }
   modes.append(importMode,createMode);
   start.append(intro,modes,labelled("复核视图",viewMode,"package-start-view"),form,create);
   showCreate(false);
   root.replaceChildren(start);
-  const entry = byId("review-entry");
-  if (entry) {
-    entry.remove();
-    try {
-      const {name:filename,bytes} = JSON.parse(entry.textContent);
-      const data = Uint8Array.fromBase64 ? Uint8Array.fromBase64(bytes) : Uint8Array.from(atob(bytes),char=>char.charCodeAt(0));
-      modes.hidden = fileRow.hidden = zipLabel.hidden = true;
-      inspect(new File([data],filename,{type:"application/zip"}),false,true);
-    } catch (error) {
-      status.textContent = "无法打开此复核页："+error.message;
-    }
-  }
 }
 
 function identifyPackageActor(incoming) {
@@ -3124,12 +3100,11 @@ function appendReviewFields(values,original,view,[beforeTitle,afterTitle]) {
 }
 
 </script>
-<script id="review-data" type="application/json">__REVIEW_DATA__</script>
+
 <script>
 "use strict";
 
 const root = document.querySelector("#app");
-const dataTag = document.querySelector("#review-data");
 const stageNames = {student:"同学复核", lawyer:"律师复核", final:"律师已复核"};
 const keyEvidence = "风险判断关键证据";
 const keyRelevant = "条款与规则是否相关";
@@ -3150,20 +3125,8 @@ const fieldHints = {
   "修订建议":"写成可直接使用的合同条款。"
 };
 const wideFields = new Set(["条款原文", "审查逻辑", "关联条款原文", keyEvidence, "风险说明", "修订建议"]);
-const stageFileNames = {student:"同学复核中", lawyer:"给律师复核", final:"律师已复核"};
 const packageMode = typeof bootPackage === "function";
-const isTemplate = dataTag.textContent.trim() === "__REVIEW_DATA__";
-let model;
-try {
-  model = isTemplate ? {contracts:[],rows:[],fields:[]} : JSON.parse(dataTag.textContent);
-  if (!Array.isArray(model.contracts) || !Array.isArray(model.rows) || !Array.isArray(model.fields)) {
-    throw new Error("缺少合同、标注记录或字段");
-  }
-} catch (error) {
-  root.textContent = "复核页数据无法读取。请使用工具重新生成页面。";
-  throw error;
-}
-model.stage = stageNames[model.stage] ? model.stage : "student";
+let model = {contracts:[],rows:[],fields:[],stage:"student"};
 let questions, suggestions, hasLawyerPane, riskField, binaryFields, fieldGroups;
 const contractById = new Map();
 const rulesById = new Map();
@@ -4399,58 +4362,6 @@ function confirmCurrent() {
   render(true);
   setNotice("已确认当前筛选中的 " + rows.length + " "+item+"。");
 }
-function saveHtml(nextStage=model.stage, returning=false) {
-  if (openEditor) {
-    setNotice("请先应用或取消当前编辑。");
-    return;
-  }
-  if (packageMode) return savePackage(nextStage);
-  if (returning && !window.confirm("保存退回版本？律师意见会保留，律师未确认的记录将交同学复查。")) return;
-  if (nextStage !== model.stage && !returning) {
-    const required = model.rows.filter(requiresReview);
-    if (nextStage === "final" && required.some(row => row.student?.reviewed !== true)) {
-      return setNotice("有风险卡还缺同学复核记录，请先保存退回同学版。");
-    }
-    if (nextStage === "final") {
-      const pendingQuestions = questions.filter(item=>!questionReviewed(item)).length;
-      if (pendingQuestions) return setNotice("还有 "+pendingQuestions+" 个实习生问题待审核，请填写答复并确认。");
-      const missingOpinions = required.filter(row => !hasLawyerOpinion(row)).length;
-      if (missingOpinions) return setNotice("还有 "+missingOpinions+" 项缺少律师复核意见，请检查风险卡和「复核记录」里的删除事项。");
-    }
-    const pending = required.filter(row => !isReviewed(row)).length;
-    if (!model.rows.length || pending) {
-      setNotice(pending ? "还有 "+pending+" 项未确认，请检查风险卡和「复核记录」里的删除事项。" : "本批没有标注记录，请先补齐。");
-      return;
-    }
-  }
-  let rows = model.rows;
-  if (model.stage === "student" && nextStage === "lawyer") {
-    rows = model.rows.map(row => ({...row,submitted_fields:{...row.fields}}));
-  } else if (returning) {
-    rows = model.rows.map(row => requiresReview(row) ? ({
-      ...row,
-      student:{...row.student,reviewed:!!row.student?.reviewed && isReviewed(row)},
-      lawyer:{...row.lawyer,reviewed:false}
-    }) : row);
-  }
-  const snapshot = {...model,rows,stage:nextStage};
-  if (model.stage === "lawyer" && nextStage === "final") snapshot.lawyer_opinion_required = true;
-  const copy = document.documentElement.cloneNode(true);
-  copy.querySelector("#app").replaceChildren();
-  copy.querySelector("#review-data").textContent = JSON.stringify(snapshot).replaceAll("<","\\u003c");
-  const text = "<!doctype html>\n" + copy.outerHTML;
-  const name = (model.title || "合同标注复核").replace(/[<>:"/\\|?*]/g,"_") + "_" + (returning ? "退回同学复核" : stageFileNames[nextStage]) + ".html";
-  const url = URL.createObjectURL(new Blob([text], {type:"text/html;charset=utf-8"}));
-  const link = node("a");
-  link.href = url;
-  link.download = name;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  dirty = false;
-  setTimeout(()=>URL.revokeObjectURL(url),1000);
-  setNotice("已发起下载「"+name+"」。交接时发送这个文件。");
-}
 function plainEntries(value) {
   if (Array.isArray(value)) return value;
   return value ? [value] : [];
@@ -4570,24 +4481,10 @@ function launch() {
   const title = model.contract_type || model.title || "合同标注复核";
   const heading = node("h1",title);
   document.title = title + " · " + stageNames[model.stage];
-  if (packageMode) packageHeader(actions);
-  else {
-    if (model.stage !== "lawyer") actions.append(button("复核记录",showLogs));
-    actions.append(button("预埋记录与检查报告",report),button("另存当前 HTML",()=>saveHtml()));
-    if (model.stage === "student") actions.append(button("问题与律师建议",()=> {
-      if (openEditor) return setNotice("请先应用或取消当前编辑。");
-      const dialog = dialogBox("问题与律师建议");
-      dialog.append(button("提出合同问题",()=> {
-        dialog.close();
-        editDiscussion("question");
-      }));
-      appendDiscussion(dialog,false);
-    }),button("保存给律师复核",()=>saveHtml("lawyer"),"primary"));
-    if (model.stage === "lawyer") actions.append(button("保存退回同学版",()=>saveHtml("student",true)),button("保存律师已复核版",()=>saveHtml("final"),"primary"));
-  }
+  packageHeader(actions);
   header.append(heading,node("span",stageNames[model.stage],"badge"),actions);
-  if (packageMode) heading.title = title;
-  const status = node("p",packageMode ? "修改后请导出 ZIP 数据包。" : model.stage==="final" ? "可交给 Codex 用包内工具重新校验并导出。" : "请另存 HTML 保留本次修改。","status");
+  heading.title = title;
+  const status = node("p","修改后请导出 ZIP 数据包。","status");
   status.id = "message";
   status.setAttribute("role","status");
   if (packageMode) {
@@ -4732,20 +4629,8 @@ window.addEventListener("beforeunload",event => {
     event.returnValue = true;
   }
 });
-if (packageMode) {
-  bootPackage();
-} else if (isTemplate) {
-  const start = node("main",null,"template-start");
-  const examples = node("nav");
-  examples.setAttribute("aria-label","复核演示");
-  const link = node("a","打开完整字段与滚动验收");
-  link.href = "../试用材料/完整字段与滚动验收.html";
-  examples.append(link);
-  start.append(node("h1","合同标注复核"),node("p","当前文件是生成模板。可从验收页完成实习生复核，再保存交接版打开律师三栏。正式复核请打开对应批次的 HTML。"),examples);
-  root.append(start);
-} else {
-  launch();
-}
+if (packageMode) bootPackage();
+else root.textContent = "请打开已构建的合同复核工具.html。";
 </script>
 </body>
 </html>

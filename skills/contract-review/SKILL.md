@@ -1,12 +1,14 @@
 ---
 name: contract-review
-description: Run the 二轮规则优化 contract review workflow. Fetch Word attachments and the annotation dataset for a contract type such as 保管合同 through the local Feishu CLI, turn review ZIPs into local intern, lawyer, or acceptance pages, and publish a verified final annotation workbook to a user-confirmed Feishu Base table.
+description: Prepare ZIPs for the 二轮规则优化 contract review workflow, use the bundled offline tool for intern review, lawyer review and acceptance, and publish verified final annotations to an approved Feishu Base.
 ---
 
 # 二轮合同复核
 
-Read [Codex 工作流](references/Codex工作流.md) for the relevant stage. Resolve commands relative to this installed skill: `scripts/review_workflow.py` is the entry point. Use the user's writable work directory for inputs and outputs. Link generated HTML as an absolute local path. Batch pages contain the ZIP and require an explicit click to enter in the local browser.
+按[工作流与命令](references/Codex工作流.md)处理当前阶段。运行 `scripts/review_workflow.py`，把 ZIP、Excel 和报告写入用户可用的目录。
 
-- **User gives a contract type.** Run `collect` with their local `lark-cli` user identity. Check its exit code and `取件/取件结果.json`. On failure, tell the user “取件失败” with the contract type, the initial annotation status if known, each reason, and what to supply or authorize. Distinguish an unannotated batch, a completed batch with a missing or inaccessible annotation set, an empty set, and missing or failed attachments. Give names when the report lists them. Wait for usable materials before running `prepare`. On success, inspect each matching evaluation Word and its valid attachments; record the type and version evidence in the checklist. If the contract type mismatches, report the affected files and hold that batch.
-- **User sends a ZIP.** Run `receive` to identify the phase from the internal package manifest and generate the local page. A lawyer-stage ZIP opens a lawyer review page. A final ZIP opens read-only intern acceptance and returns the local Excel and preflight report when available. Check the rules and all four validation dimensions in [标注与导出](references/标注与导出.md). Never invent document-review evidence.
-- **Final delivery.** Return the acceptance link first. Ask whether to write the verified annotations into Feishu and ask for the exact destination and intended operation if missing. After the user approves the specific target, run confirmed `publish` only with the ready preflight report bound to the same final ZIP and workbook. Return the Excel and the Feishu receipt with the target link and read-back result. Receipt status controls whether delivery is complete. Do not silently retry an uncertain write or modify any sourcing tables.
+**实习生、律师和最终验收共用 [合同复核工具.html](assets/合同复核工具.html)。** 返回命令给出的固定工具和本批 ZIP 的绝对本地链接。任何批次都禁止生成或复制 HTML、嵌入 ZIP、用临时网页代替工具。用户可在固定工具点「导入已有 ZIP」和「选择 ZIP」。用户希望代导入时，用本机浏览器在同一工具选择该 ZIP，确认预览中的阶段后交由用户填写署名或进入；无法操作本机浏览器时提供手动导入步骤。
+
+- **用户给出合同类型。** 用本机已授权的 `lark-cli` 用户身份运行 `collect`，检查退出码和 `取件/取件结果.json`。取件失败时说明合同类型、初标状态、缺失或无法读取的标注集、附件及需补材料，报告有文件名时照列。材料齐备后逐份核对评测 Word 和有效附件，记录类型及版本依据，再运行 `prepare`。类型不符时列出文件并暂停该批。
+- **收到复核 ZIP。** 用 `receive` 校验清单并确认阶段。实习生或律师在固定工具中导入对应 ZIP。律师终版在同一工具只读验收，同时输出预检报告和可用的本地 Excel。按[标注与导出](references/标注与导出.md)完成四项检查，以实际材料记录核验依据。
+- **终版交付。** 先给固定工具和终版 ZIP 的独立链接。询问是否写入飞书，缺少明确目标或操作时一并确认。取得用户同意后，使用同一终版 ZIP、Excel 和状态为 `ready` 的预检报告运行 `publish`，交付 Excel、目标表链接和回读回执。写入状态不明时先核对远端。 来源表仅用于取件。

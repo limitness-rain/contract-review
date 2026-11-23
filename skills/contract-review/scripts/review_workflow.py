@@ -98,7 +98,7 @@ def finish_fetch(output, report):
         print(f"取件失败｜{report['contract_type']}｜初标状态：{state}", file=sys.stderr)
         for issue in report["issues"]:
             print(f"- {issue}", file=sys.stderr)
-        print("材料补齐或授权恢复后请重新取件；当前不能生成初始 ZIP 或复核页。", file=sys.stderr)
+        print("材料补齐或授权恢复后请重新取件；当前不能生成初始 ZIP。", file=sys.stderr)
     print(path)
     return report
 
@@ -212,7 +212,7 @@ def contract_paths(checks, contract_type):
     for i, item in enumerate(checks["contracts"], 1):
         name, path = item["name"], Path(item["path"])
         if item.get("match") is not True or not item.get("reason", "").strip():
-            raise ValueError(f"{name} 未确认属于「{contract_type}」：{item.get('reason', '缺少类型核验依据')}。本批未生成复核页")
+            raise ValueError(f"{name} 未确认属于「{contract_type}」：{item.get('reason', '缺少类型核验依据')}。本批未生成初始 ZIP")
         if package.digest(path.read_bytes()) != item["sha256"]:
             raise ValueError(f"{name} 的文件内容与类型核验时不同")
         contract = sources.docx_contract(path, f"C{i}", name)
@@ -253,9 +253,19 @@ def annotation_rows(paths, contracts, rule_keys):
     return rows
 
 
+def review_tool_path():
+    root = Path(__file__).resolve().parent.parent
+    filename = "合同复核工具.html"
+    tool = root / "assets" / filename if (root / "SKILL.md").is_file() else root / filename
+    if not tool.is_file():
+        raise ValueError(f"找不到固定工具：{tool}。请恢复开发文件或重新安装 Skill。")
+    return tool
+
+
 def prepare(args):
-    if args.zip.resolve() == args.html.resolve() or args.zip.exists() or args.html.exists():
-        raise ValueError("请为初始 ZIP 和复核页指定两个新的输出文件")
+    if args.zip.suffix.lower() != ".zip" or args.zip.exists():
+        raise ValueError("请为初始包指定尚不存在的 .zip 输出文件")
+    tool = review_tool_path()
     type_check = review.read_data(args.type_check)
     if args.materials:
         if args.annotations or args.rules:
@@ -308,14 +318,8 @@ def prepare(args):
     package.seed_project(project, review.index_records(project["contracts"], "合同"),
                          review.index_records(project["rules"], "正式规则"), args.zip, documents+supporting,
                          source="、".join(path.name for path in args.annotations))
-    package.build_tool(args.html, args.zip)
-
-
-def entry(args):
-    incoming = package.read_package(args.zip)
-    if incoming.project["stage"] != args.stage:
-        raise ValueError(f"需要 {args.stage} 阶段的 ZIP，当前包处于 {incoming.project['stage']} 阶段")
-    package.build_tool(args.html, args.zip)
+    print(tool)
+    print(args.zip.resolve())
 
 
 def receive(args):
@@ -323,11 +327,14 @@ def receive(args):
     stage = incoming.project["stage"]
     if args.stage and args.stage != stage:
         raise ValueError(f"需要 {args.stage} 阶段的 ZIP，当前包处于 {stage} 阶段")
-    args.out.mkdir(parents=True, exist_ok=False)
-    names = {"student":"实习生复核", "lawyer":"律师复核", "final":"实习生验收"}
-    page = args.out / (names[stage] + ".html")
-    package.build_tool(page, args.zip)
-    print(page.resolve(), flush=True)
+    if stage == "final" and args.out is None:
+        raise ValueError("接收律师终版时请用 --out 指定 Excel 和预检报告的输出目录。")
+    tool = review_tool_path()
+    if stage == "final":
+        args.out.mkdir(parents=True, exist_ok=False)
+    print(tool, flush=True)
+    print(args.zip.resolve())
+    print(f"阶段：{stage}")
     if stage == "final":
         report, workbook = args.out / "预检.json", args.out / "标注集.xlsx"
         result = preflight(argparse.Namespace(zip=args.zip, coverage=args.coverage, rules=args.rules,
@@ -552,14 +559,9 @@ def main():
     create.add_argument("--coverage", type=Path)
     create.add_argument("--paired", action="store_true")
     create.add_argument("--zip", type=Path, required=True)
-    create.add_argument("--html", type=Path, required=True)
-    page = commands.add_parser("entry", help="检查角色阶段并生成直接装载 ZIP 的本地复核页")
-    page.add_argument("--zip", type=Path, required=True)
-    page.add_argument("--stage", choices=("student", "lawyer", "final"), required=True)
-    page.add_argument("--html", type=Path, required=True)
-    receive_package = commands.add_parser("receive", help="按 ZIP 阶段生成复核页；律师终版另导出 Excel 和预检")
+    receive_package = commands.add_parser("receive", help="核验 ZIP 阶段并返回固定工具路径，律师终版另导出 Excel 和预检")
     receive_package.add_argument("--zip", type=Path, required=True)
-    receive_package.add_argument("--out", type=Path, required=True)
+    receive_package.add_argument("--out", type=Path, help="律师终版 Excel 和预检报告的输出目录")
     receive_package.add_argument("--stage", choices=("student", "lawyer", "final"))
     receive_package.add_argument("--coverage", type=Path)
     receive_package.add_argument("--rules", type=Path, action="append")
@@ -586,7 +588,7 @@ def main():
         return 0
     if args.command == "fetch":
         return int(fetch(args)["status"] == "failed")
-    return {"collect":collect, "prepare":prepare, "entry":entry, "receive":receive,
+    return {"collect":collect, "prepare":prepare, "receive":receive,
             "preflight":preflight, "publish":publish}[args.command](args) or 0
 
 

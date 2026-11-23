@@ -1,6 +1,6 @@
 # 合同标注复核工具
 
-从「二轮规则优化」读取合同与标注集，生成实习生复核、律师复核和最终验收的本地页面。审核人员使用 ZIP 交接，最终可导出 15 列 Excel，确认目标后由 Codex 提交飞书。
+从「二轮规则优化」读取合同与标注集，生成初始复核 ZIP。实习生、律师和最终验收共用固定的合同复核工具，用 ZIP 交接，最终可导出 15 列 Excel，确认目标后由 Codex 提交飞书。
 
 ## 在 Codex 中使用
 
@@ -17,9 +17,9 @@ Codex 取件和写入用当前机器的 `lark-cli` 登录身份。需要 Python 
 ## 三句可直接使用
 
 1. 「用 $contract-review 复核保管合同。」
-2. 「这是实习生交接 ZIP，用 $contract-review 生成律师复核页。」
-3. 「这是律师终版 ZIP，用 $contract-review 生成实习生验收页和 Excel。」
+2. 「这是实习生交接 ZIP，用 $contract-review 帮我在固定工具里导入。」
+3. 「这是律师终版 ZIP，用 $contract-review 做验收预检并导出 Excel。」
 
-第三步先生成本地验收链接。Codex 会询问是否提交飞书，并核对目标位置。经确认后才写入并回读。
+Codex 会分别提供固定的「合同复核工具.html」和本批 ZIP。用 Chrome 或 Edge 打开工具，点「导入已有 ZIP」并选取文件。也可以请 Codex 在本机浏览器代导入。律师终版另有预检报告和可用的 Excel，飞书写入需确认目标及操作。
 
 [Skill 入口](./skills/contract-review/SKILL.md) · [流程与命令](./skills/contract-review/references/Codex工作流.md) · [标注字段与交付口径](./skills/contract-review/references/标注与导出.md)

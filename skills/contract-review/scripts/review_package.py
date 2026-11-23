@@ -1,7 +1,6 @@
-"""Build the offline review tool, migrate old review files, and verify ZIP exports."""
+"""Migrate old review files and verify ZIP exports."""
 
 import argparse
-from base64 import b64encode
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -9,7 +8,6 @@ import json
 from pathlib import Path
 import re
 import sys
-from tempfile import TemporaryDirectory
 from uuid import uuid4
 from zipfile import BadZipFile, ZIP_STORED, ZipFile
 
@@ -263,34 +261,9 @@ def seed_project(project, contracts, rules, output, files, family=None, source="
             archive.writestr(name, data)
 
 
-def build_tool(output, embedded_package=None):
-    html = review.TEMPLATE.read_text(encoding="utf-8")
-    marker = '<script id="review-data"'
-    if html.count(marker) != 1:
-        raise ValueError("找不到工具脚本插入位置")
-    with TemporaryDirectory() as folder:
-        blank = Path(folder) / "blank.xlsx"
-        review.xlsx(blank, list(review.FIELDS), [])
-        with ZipFile(blank) as archive:
-            xlsx_parts = {name: archive.read(name).decode() for name in archive.namelist()}
-    scripts = "const packageFieldNames = " + json.dumps(review.FIELDS, ensure_ascii=False) + ";\n"
-    scripts += "const packageXlsxParts = " + json.dumps(xlsx_parts, ensure_ascii=False) + ";\n"
-    for name in ("package-codec.js", "package-intake.js", "package-ui.js"):
-        scripts += review.TEMPLATE.with_name(name).read_text(encoding="utf-8") + "\n"
-    if re.search(r"</script", scripts, re.I):
-        raise ValueError("工具脚本含不能直接嵌入的结束标记")
-    prefix = "<script>\n" + scripts + "</script>\n"
-    if embedded_package:
-        payload = json_bytes({"name": embedded_package.name, "bytes": b64encode(embedded_package.read_bytes()).decode()})
-        prefix += '<script type="application/json" id="review-entry">' + payload.decode().replace("<", "\\u003c") + "</script>\n"
-    review.write_new(output, html.replace(marker, prefix + marker, 1))
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest="command", required=True)
-    tool = actions.add_parser("tool", help="生成固定离线 HTML 工具")
-    tool.add_argument("--out", type=Path, required=True)
     create = actions.add_parser("seed", help="从旧复核 HTML 或项目 JSON 生成首包或迁移包")
     create.add_argument("project", type=Path)
     create.add_argument("--labels", type=Path)
@@ -303,9 +276,6 @@ def main():
         if action == "export":
             cmd.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    if args.command == "tool":
-        build_tool(args.out)
-        return
     if args.command == "seed":
         seed(args.project, args.out, args.source, args.labels, args.batch)
         return

@@ -1,7 +1,6 @@
-"""Build an offline review page and export reviewed annotations."""
+"""Validate review data and export reviewed annotations."""
 import argparse
 from collections import Counter, defaultdict
-from hashlib import sha256
 import json
 from pathlib import Path
 import re
@@ -24,7 +23,6 @@ JUDGMENT = "三、全文判断"
 COVERAGE = "四、漏标、重复与版本同步"
 HTML_DATA = re.compile(r"<script\b[^>]*\bid=['\"]review-data['\"][^>]*>(.*?)</script\s*>", re.I | re.S)
 BLANK_LAYOUT = re.compile(r"[\r\n\t \u3000\u00a0]+")
-TEMPLATE = Path(__file__).with_name("review.html")
 
 
 def same_text(value):
@@ -96,7 +94,7 @@ def load_project(path):
     contracts = index_records(project.get("contracts"), "合同")
     rules = index_records(project.get("rules"), "规则")
     if not contracts or not rules:
-        raise ValueError("生成复核页面需要合同原文及当前适用规则")
+        raise ValueError("复核项目缺少合同原文或适用规则")
     for contract in contracts.values():
         sections = contract.get("sections")
         if not contract.get("name") or not sections:
@@ -439,21 +437,6 @@ def validation_report(project, issues):
     return json.dumps(report, ensure_ascii=False, indent=2)
 
 
-def build_review(project, contracts, rules, output):
-    for row in project["rows"]:
-        row.setdefault("original_fields", row.get("fields", {}).copy())
-    project["fields"] = list(FIELDS)
-    project["checks"] = list(project.get("semantic_checks", [])) + validate(project, contracts, rules)
-    project.setdefault("snapshot_id", sha256(json.dumps(project, ensure_ascii=False).encode()).hexdigest()[:20])
-    template = TEMPLATE.read_text(encoding="utf-8-sig")
-    slot = ">__REVIEW_DATA__</script>"
-    if template.count(slot) != 1:
-        raise ValueError("复核模板缺少唯一的数据位置")
-    payload = json.dumps(project, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
-    write_new(output, template.replace(slot, f">{payload}</script>"))
-
-
-
 def count_positives(project, contracts, rules):
     by_rule = defaultdict(set)
     for row in project["rows"]:
@@ -473,10 +456,6 @@ def count_positives(project, contracts, rules):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    build = sub.add_parser("build", help="结构化原文、规则和标注生成复核 HTML")
-    build.add_argument("project", type=Path)
-    build.add_argument("--labels", type=Path, help="已做好的标注 JSON 或 XLSX，用于替代项目里的空 rows")
-    build.add_argument("--out", required=True, type=Path)
     check = sub.add_parser("check", help="自动检查项目 JSON 或已保存的复核 HTML")
     check.add_argument("project", type=Path)
     check.add_argument("--out", type=Path)
@@ -488,12 +467,7 @@ def main():
     export.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     project, contracts, rules = load_project(args.project)
-    if args.command == "build":
-        if args.labels:
-            attach_rows(project, contracts, rules, args.labels)
-        build_review(project, contracts, rules, args.out)
-        print(f"复核页含 {len(project['rows'])} 条记录，{len(project['checks'])} 条检查提示")
-    elif args.command == "positives":
+    if args.command == "positives":
         issues = validate(project, contracts, rules)
         if any(issue["blocking"] for issue in issues):
             raise ValueError("请先修正标注结构和原值，再统计正例")
