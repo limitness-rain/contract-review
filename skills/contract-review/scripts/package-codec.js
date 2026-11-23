@@ -80,6 +80,11 @@ function latestPackageJudgment(row,role) {
 function packageCurrentRemoval(row) {
   return row.fields["是否触发该风险"]==="否" && latestPackageJudgment(row)?.action==="remove";
 }
+function packageRequiresCardReview(row) {
+  const fields = packageCurrentRemoval(row) ? latestPackageJudgment(row).before : row.fields;
+  const type = packageCardType(fields);
+  return type!=="" && type!=="unrelated";
+}
 function packageWorkbookSelection(project) {
   if (project.stage!=="final") return {rows:project.rows,removed:0};
   const paired = new Set(packagePairs(project).flatMap(pair=>pair.contracts));

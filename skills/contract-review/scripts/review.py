@@ -23,6 +23,7 @@ JUDGMENT = "三、全文判断"
 COVERAGE = "四、漏标、重复与版本同步"
 HTML_DATA = re.compile(r"<script\b[^>]*\bid=['\"]review-data['\"][^>]*>(.*?)</script\s*>", re.I | re.S)
 BLANK_LAYOUT = re.compile(r"[\r\n\t \u3000\u00a0]+")
+JUDGMENT_ACTIONS = {"remove", "restore", "add", "标记为触发", "标记为相关未触发", "标记为不相关", "标记为未触发"}
 
 
 def same_text(value):
@@ -207,6 +208,22 @@ def card_type(fields):
     return ""
 
 
+def latest_judgment(history):
+    if not isinstance(history, list):
+        return {}
+    return next((event for event in reversed(history)
+                 if isinstance(event, dict) and event.get("action") in JUDGMENT_ACTIONS), {})
+
+
+def requires_card_review(row):
+    fields = row.get("fields", {})
+    if fields.get(HIT) == "否":
+        judgment = latest_judgment(row.get("review_history"))
+        if judgment.get("action") == "remove":
+            fields = judgment.get("before") or {}
+    return card_type(fields) not in {"", "unrelated"}
+
+
 def card_blank_fields(card):
     explanation = (EXPLAIN, FIX)
     if card == "related-clear":
@@ -257,7 +274,7 @@ def attach_rows(project, contracts, rules, label_path):
     return project
 
 
-def validate(project, contracts, rules, final=False):
+def validate(project, contracts, rules, final=False, *, review_card_types=False):
     rows = index_records(project.get("rows"), "标注行")
     if not rows:
         raise ValueError("没有标注记录")
@@ -356,7 +373,8 @@ def validate(project, contracts, rules, final=False):
             collapsed = layout_text(clause)
             excerpts = [layout_text(part) for part in re.split(r"\n\s*\n", evidence) if part.strip()]
             if layout_text(evidence) not in collapsed and any(part not in collapsed for part in excerpts):
-                add(row_id, FORMAT, "关键证据不能在本行主切片中定位，请核对摘录", field=EVIDENCE)
+                add(row_id, FORMAT, "关键证据不能在本行主切片中定位，请核对摘录",
+                    not (review_card_types and card == "unrelated"), field=EVIDENCE)
         if f[ASSOCIATED] and contract and not any(
             layout_text(f[ASSOCIATED]) == layout_text(text) for text in full_texts[c_id]
         ):
@@ -400,7 +418,8 @@ def validate(project, contracts, rules, final=False):
                                 or not (was_reviewable_untriggered or (scope == "full_missing" and risk_card))))):
                         add(row_id, JUDGMENT, "删去风险批注须保留删除前的标注字段和原风险结论")
         untriggered_review = project.get("review_related") is True and was_reviewable_untriggered
-        if final and (risk_card or untriggered_review):
+        needs_review = requires_card_review(row) if review_card_types else risk_card or untriggered_review
+        if final and needs_review:
             for role, label in (("student", "同学"), ("lawyer", "律师")):
                 if role == "student" and row.get("lawyer_review_only") is True:
                     continue

@@ -18,7 +18,6 @@ VERSION = 1
 PAIRED_VERSION = 2
 SOURCE_FIELDS = {"合同附件名称", "立场"}
 SHARED_FIXED_FIELDS = SOURCE_FIELDS | {"风险名称", "风险等级", "审查逻辑", "条款原文"}
-JUDGMENT_ACTIONS = {"remove", "restore", "add", "标记为触发", "标记为相关未触发", "标记为不相关", "标记为未触发"}
 LIMIT = 200 * 1024 * 1024
 STATE_KEYS = {"stage", "review_questions", "lawyer_suggestions", "lawyer_opinion_required", "role_views", "review_related"}
 ID = re.compile(r"[0-9a-f-]{36}")
@@ -56,9 +55,7 @@ def apply_event(project, rows, event):
 
 
 def is_current_removal(row):
-    latest = next((entry["action"] for entry in reversed(row.get("review_history") or [])
-                   if entry and entry.get("action") in JUDGMENT_ACTIONS), None)
-    return row["fields"]["是否触发该风险"] == "否" and latest == "remove"
+    return row["fields"][review.HIT] == "否" and review.latest_judgment(row.get("review_history")).get("action") == "remove"
 
 
 def version_pairs(project):
@@ -283,7 +280,8 @@ def main():
     project = package.project
     contracts = review.index_records(project["contracts"], "合同")
     rules = review.index_records(project["rules"], "规则")
-    issues = review.validate(project, contracts, rules, final=args.command == "export" or project["stage"] == "final")
+    issues = review.validate(project, contracts, rules, final=args.command == "export" or project["stage"] == "final",
+                             review_card_types=package.manifest.get("review_card_types") is True)
     print(review.validation_report(project, issues))
     if any(i["blocking"] for i in issues):
         raise ValueError("复核数据存在阻塞问题")

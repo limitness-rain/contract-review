@@ -309,6 +309,11 @@ function latestPackageJudgment(row,role) {
 function packageCurrentRemoval(row) {
   return row.fields["是否触发该风险"]==="否" && latestPackageJudgment(row)?.action==="remove";
 }
+function packageRequiresCardReview(row) {
+  const fields = packageCurrentRemoval(row) ? latestPackageJudgment(row).before : row.fields;
+  const type = packageCardType(fields);
+  return type!=="" && type!=="unrelated";
+}
 function packageWorkbookSelection(project) {
   if (project.stage!=="final") return {rows:project.rows,removed:0};
   const paired = new Set(packagePairs(project).flatMap(pair=>pair.contracts));
@@ -1666,9 +1671,9 @@ function packageHeader(actions) {
     actions.append(button("导出标注集 Excel",exportPackageWorkbook,"primary"));
     return;
   }
-  actions.append(button("导出当前进度",()=>saveHtml()));
-  if (model.stage==="student") actions.append(button("提交给律师",()=>saveHtml("lawyer"),"primary"));
-  else actions.append(button("导出律师终版 ZIP",()=>saveHtml("final"),"primary"));
+  actions.append(button("导出当前进度",()=>savePackage(model.stage)));
+  if (model.stage==="student") actions.append(button("提交给律师",()=>savePackage("lawyer"),"primary"));
+  else actions.append(button("导出律师终版 ZIP",()=>savePackage("final"),"primary"));
 }
 function showPackageSources() {
   const dialog = dialogBox("材料与来源");
@@ -1723,10 +1728,15 @@ async function savePackage(nextStage) {
   if (openEditor) return setNotice("请先应用或取消当前编辑。");
   const handoff = nextStage!==model.stage;
   const action = nextStage==="final" ? "保存律师终版" : handoff ? "提交给律师" : "导出当前进度";
-  const required = model.rows.filter(requiresReview);
-  if (handoff && nextStage!=="final" && required.some(row=>!isReviewed(row))) {
-    return setNotice(required.some(row=>!isReviewed(row) && packageCurrentRemoval(row)) ?
-      "还有删除事项待确认，请查看「更多」→「复核记录」。" : "还有标注待确认，可先导出当前进度。");
+  if (handoff && nextStage==="lawyer") {
+    const pending = packageReviewRows().filter(row=>!isReviewed(row));
+    if (pending.length) {
+      const dialog = dialogBox("还有标注待确认");
+      dialog.setAttribute("aria-label","还有标注待确认");
+      dialog.append(node("p","前四类中还有 "+pending.length+" 张卡片待确认。确认后可提交给律师，也可以先导出当前进度。"));
+      if (pending.some(packageCurrentRemoval)) dialog.append(node("p","删除事项请在「更多」→「复核记录」中确认。"));
+      return;
+    }
   }
   if (nextStage==="final") {
     const failures = finalPackageIssues(model,false);
@@ -1736,26 +1746,29 @@ async function savePackage(nextStage) {
   const contractName = model.title;
   const stage = student ? "实习生初审" : "律师复核";
   const nextStep = handoff ? (student ? "交律师" : "交实习生验收") : (student ? "继续初审" : "继续复核");
-  const filename = await choosePackageFilename(packageExportName(contractName,packageSession.actor.name,stage,nextStep),".zip");
-  if (!filename) return;
-  capturePackageChange("保存本轮修改");
-  const prior = packageSession.manifest;
-  const target = structuredClone(model);
-  target.stage = nextStage;
-  if (nextStage==="final") {
-    target.lawyer_opinion_required = false;
-    target.review_related = true;
-  }
-  const next = snapshotPackageChanges(target);
-  const event = handoff ? packageEvent(action,packageSession.known,next,packageSession.events.length+1) : null;
-  const events = event ? [...packageSession.events,event] : [...packageSession.events];
-  const manifest = {
-    ...prior,package_id:crypto.randomUUID(),parents:[prior.package_id],revision:prior.revision+1,
-    stage:nextStage,
-    handoff:handoff ? {action,actor:packageSession.actor.name,role:model.stage,at:new Date().toISOString()} : prior.handoff
-  };
-  packageBusy = root.inert = true;
+  packageBusy = true;
   try {
+    const filename = await choosePackageFilename(packageExportName(contractName,packageSession.actor.name,stage,nextStep),".zip");
+    if (!filename) return;
+    root.inert = true;
+    capturePackageChange("保存本轮修改");
+    setNotice("正在生成 ZIP…");
+    const prior = packageSession.manifest;
+    const target = structuredClone(model);
+    target.stage = nextStage;
+    if (nextStage==="final") {
+      target.lawyer_opinion_required = false;
+      target.review_related = true;
+    }
+    const next = snapshotPackageChanges(target);
+    const event = handoff ? packageEvent(action,packageSession.known,next,packageSession.events.length+1) : null;
+    const events = event ? [...packageSession.events,event] : [...packageSession.events];
+    const manifest = {
+      ...prior,package_id:crypto.randomUUID(),parents:[prior.package_id],revision:prior.revision+1,
+      stage:nextStage,
+      handoff:handoff ? {action,actor:packageSession.actor.name,role:model.stage,at:new Date().toISOString()} : prior.handoff
+    };
+    if (nextStage==="final") manifest.review_card_types = true;
     if (packagePairs(target).length) validatePackageVersionPair(packageSession.baseline,target);
     const zip = await exportReviewPackage(packageSession,manifest,events);
     downloadPackageFile(zip,filename);
@@ -2782,7 +2795,10 @@ function renderPackage(keepScroll) {
     if (packageCardHidden(row,page.role)) closePackageDetail(page.role);
     else updatePackageDetail(page,row);
   }
-  byId("match").textContent = visible.student.length+" 条";
+  byId("match").textContent = "当前显示 "+visible.student.length+" 张";
+  const lawyerMatch = byId("lawyer-match");
+  lawyerMatch.hidden = !lawyerVisible;
+  lawyerMatch.textContent = "当前显示 "+visible.lawyer.length+" 张";
   progress();
 }
 
@@ -2897,7 +2913,7 @@ function finalPackageIssues(project,requireOpinion=true) {
         add(keyEvidence,"这条标注已判为触发，需要从左侧对应条款摘录支持判断的原文。",{editField:keyEvidence});
       }
     }
-    if (clause && evidence && !compact(clause).includes(compact(evidence)) &&
+    if ((!usesPackageCardReview() || type!=="unrelated") && clause && evidence && !compact(clause).includes(compact(evidence)) &&
         evidence.split(/\n\s*\n/).filter(part=>part.trim()).some(part=>!compact(clause).includes(compact(part)))) {
       add(keyEvidence,"至少一段证据在当前主条款中找不到。请逐段核对并摘录左侧原文字句。",{editField:keyEvidence});
     }
@@ -3149,8 +3165,9 @@ const requiresRiskReview = row => row.review_required === true || wasRisk(row);
 const relatedUntriggered = fields => fields?.[keyRelevant]==="是" && fields?.[riskField]==="否";
 const requiresUntriggeredReview = row => rowVersions(row).some(packageUntriggeredCard) ||
   (Array.isArray(row.review_history) && row.review_history.some(event=>packageUntriggeredCard(event?.before)));
-const requiresReview = row => requiresRiskReview(row) ||
-  (packageMode && (model.stage!=="final" || model.review_related===true) && requiresUntriggeredReview(row));
+const usesPackageCardReview = () => packageMode && (model.stage!=="final" || packageSession.manifest.review_card_types===true);
+const requiresReview = row => usesPackageCardReview() ? packageRequiresCardReview(row) :
+  requiresRiskReview(row) || (packageMode && model.review_related===true && requiresUntriggeredReview(row));
 const hasLawyerOpinion = row => typeof row.lawyer?.note === "string" && !!row.lawyer.note.trim();
 const isReviewed = row => model.stage === "student" ? !!row.student?.reviewed :
   !!row.lawyer?.reviewed && (packageMode || model.stage === "final" || hasLawyerOpinion(row));
@@ -3217,11 +3234,12 @@ function reviewProgressLabel() {
   const count = node("span",null,"small");
   count.id = "progress";
   count.setAttribute("aria-live","polite");
+  if (packageMode) count.title = "已确认项数 / 必审总数。两个版本共用的标注合为一次确认。";
   return count;
 }
 function progress() {
   const required = packageMode ? packageReviewRows() : model.rows.filter(requiresReview);
-  byId("progress").textContent = (packageMode ? "已复核 " : "全批风险卡已复核 ") + required.filter(isReviewed).length + " / " + required.length;
+  byId("progress").textContent = (packageMode ? "整包必审已确认 " : "全批风险卡已复核 ") + required.filter(isReviewed).length + " / " + required.length;
 }
 function currentSections(id=contractId) {
   const contract = contractById.get(id);
@@ -4531,7 +4549,12 @@ function launch() {
     const heading = node("div",null,"pane-heading");
     heading.append(node("h2","律师复核"));
     const tools = node("div",null,"toolbar-line");
-    if (packageMode && model.stage!=="student") tools.append(reviewProgressLabel());
+    if (packageMode) {
+      const match = node("span",null,"small");
+      match.id = "lawyer-match";
+      tools.append(match);
+      if (model.stage!=="student") tools.append(reviewProgressLabel());
+    }
     if (model.stage === "lawyer") {
       const commands = [button("新增全文缺失风险",()=>addAnnotation(null)),
         button(packageMode ? "确认所有未复核的标注" : "确认当前筛选的风险卡",confirmCurrent)];

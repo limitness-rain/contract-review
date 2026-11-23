@@ -491,7 +491,8 @@ def preflight(args):
 
     contracts = review.index_records(project["contracts"], "合同")
     rules = review.index_records(project["rules"], "正式规则")
-    for issue in review.validate(project, contracts, rules, final=True):
+    for issue in review.validate(project, contracts, rules, final=True,
+                                 review_card_types=incoming.manifest.get("review_card_types") is True):
         identity = contracts.get(issue.get("contract_id"), {})
         add(issue.get("field") or issue["check"], issue["message"], row_id=issue["row_id"],
             contract=identity.get("name"), expected=issue.get("expected"), blocking=issue["blocking"])
