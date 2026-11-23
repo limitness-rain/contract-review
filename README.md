@@ -4,9 +4,9 @@
 
 ## 在 Codex 中使用
 
-- **从 GitHub 安装 Skill**。把下面这句话发给 Codex，然后在新对话中调用 `$contract-review`。
+- **从 GitHub 安装 Skill**。把下面这句话发给 Codex，安装完成的回复会带上使用提示。接着可直接说合同类型或发复核 ZIP，也可调用 `$contract-review`。
 
-  > 请用 `$skill-installer` 从 https://github.com/limitness-rain/contract-review 安装 `contract-review` 技能。
+  > 请用 `$skill-installer` 从 https://github.com/limitness-rain/contract-review 的 `skills/contract-review` 安装 `contract-review`。安装成功后，读取该 Skill 的「开场」并在当前回复中告诉我三种主要用法。
 
   Skill 在仓库的 `skills/contract-review` 目录。直接运行安装脚本时，用仓库首页 URL 搭配 `--path skills/contract-review`。仓库为私有时，使用有访问权限的 GitHub 账号。
 - **把工具 ZIP 交给 Codex**。在可访问本机文件和终端的 Codex 中提供 ZIP，告诉 Codex「解压并使用其中的 contract-review 技能，复核保管合同」。也可以把解压目录直接作为 Codex 工作区。工具 ZIP 与每个批次的复核 ZIP 各有用途。
@@ -16,9 +16,11 @@ Codex 取件和写入用当前机器的 `lark-cli` 登录身份。需要 Python 
 
 ## 三句可直接使用
 
-1. 「用 $contract-review 复核保管合同。」
-2. 「这是实习生交接 ZIP，用 $contract-review 帮我在固定工具里导入。」
-3. 「这是律师终版 ZIP，用 $contract-review 做验收预检并导出 Excel。」
+1. 「帮我复核保管合同。」
+2. （附实习生交接 ZIP）「这个同学交来的包，帮我打开给律师看。」
+3. （附律师终版 ZIP）「帮我验收一下，导出 Excel。」
+
+进入 Skill 时会先简短提示这三种用法。在复核对话中只说「保管合同」或「给我保管合同的复核 HTML」也可启动取件。有 ZIP 时，按包内阶段打开。若自然语言未自动选中本 Skill，在消息开头加 `$contract-review`。
 
 Codex 会分别提供固定的「合同复核工具.html」和本批 ZIP。用 Chrome 或 Edge 打开工具，点「导入已有 ZIP」并选取文件。也可以请 Codex 在本机浏览器代导入。律师终版另有预检报告和可用的 Excel，飞书写入需确认目标及操作。
 
