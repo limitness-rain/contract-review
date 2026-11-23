@@ -16,6 +16,7 @@ from zipfile import BadZipFile, ZipFile
 import review
 import review_package as package
 import review_publish
+import review_risk
 import sources
 
 MATERIAL_ERRORS = (ValueError, OSError, KeyError, TypeError, BadZipFile, ParseError, subprocess.TimeoutExpired)
@@ -39,13 +40,20 @@ def material_route(index):
     state = index.get("statuses", {}).get("initial")
     if state == "已完成":
         return "missing_completed"
+    if index.get("annotation_cell"):
+        return "invalid_annotation_link"
+    attachments = index.get("attachments", {})
+    if attachments.get("evaluation"):
+        return "annotation_required"
+    if attachments.get("original") and index.get("record_ids", {}).get("samples"):
+        return "risk_confirmation_required"
     if state in {"未开始", "未初标", "未标注", "未完成", "待初标", "未进行", "进行中"}:
         return "pending_initial"
     return "unknown_initial"
 
 
-def discover(contract_type, output):
-    index = sources.resolve(contract_type)
+def discover(contract_type, output, annotation_override=False):
+    index = sources.resolve(contract_type, annotation_override)
     index["route"] = material_route(index)
     write_report(output, index)
 
@@ -90,10 +98,12 @@ def fetch_contracts(index_path, index, table, output, report):
 
 
 def finish_fetch(output, report):
-    report["status"] = "failed" if report["issues"] else "ready"
+    report.setdefault("status", "failed" if report["issues"] else "ready")
     path = output / "取件结果.json"
     write_report(path, report)
-    if report["status"] == "failed":
+    if report.get("next_step"):
+        print(report["next_step"], file=sys.stderr)
+    elif report["status"] == "failed":
         state = report.get("initial_status") or "未确认"
         print(f"取件失败｜{report['contract_type']}｜初标状态：{state}", file=sys.stderr)
         for issue in report["issues"]:
@@ -110,7 +120,22 @@ def fetch(args):
     output.mkdir(parents=True, exist_ok=False)
     report = {"contract_type":index["contract_type"], "initial_status":index["statuses"]["initial"],
               "route":route, "record_ids":index["record_ids"], "table_urls":index.get("table_urls", {}), "issues":[]}
+    attachments = index["attachments"]
+    if route in {"annotation_required", "risk_confirmation_required"}:
+        report["attachment_names"] = {
+            version: [item["name"] for item in attachments[version]] for version in ("original", "evaluation")
+        }
+        if route == "annotation_required":
+            report["status"] = "needs_annotation"
+            report["issues"].append("已有用于评测的合同，尚无标注集。")
+            report["next_step"] = "请先对现有评测合同完成标注，将标注集挂到「计划表 v07」的「标注和评测集」，再重新取件。"
+        else:
+            report["status"] = "needs_confirmation"
+            report["issues"].append("只有合同样本，尚无标注集和用于评测的合同。")
+            report["next_step"] = "请确认是否根据本批合同样本开始双立场风险预埋。"
+        return finish_fetch(output, report)
     stage = {"missing_completed":"计划表显示初标已完成，但「标注和评测集」没有可用链接。请补本批标注集链接或文件。",
+             "invalid_annotation_link":"「标注和评测集」有内容，但没有可读取的链接。请核对本批标注集入口。",
              "pending_initial":"当前批次尚无标注集，计划表初标未完成。请在初标完成并挂上标注集后重试，或提供本批已有的标注集。",
              "unknown_initial":"未找到标注集链接，且初标状态无法确认。请核对计划表「初标状态」和「标注和评测集」。"}
     table = None
@@ -138,9 +163,16 @@ def fetch(args):
         fetch_contracts(args.index, index, table, output, report)
     except MATERIAL_ERRORS as exc:
         report["issues"].append(f"读取合同样本库附件失败：{exc}")
-    if route not in {"pending_initial", "unknown_initial"}:
-        for slot, override in (("整理好的规则", args.rule), ("另一方立场规则", args.other_rule)):
-            urls = index.get("rule_urls", {}).get(slot, [])
+    if route == "existing":
+        rule_urls = index.get("rule_urls", {})
+        if args.annotation and not index["annotation_urls"] and not index["record_ids"].get("tasks"):
+            if not (args.rule and args.other_rule):
+                try:
+                    rule_urls = sources.task_rule_links(sources.class_record("tasks", index["contract_type"]))
+                except MATERIAL_ERRORS as exc:
+                    report["issues"].append(f"读取任务管理表正式规则失败：{exc}")
+        for slot, override in zip(sources.RULE_SLOTS, (args.rule, args.other_rule)):
+            urls = rule_urls.get(slot, [])
             if not urls and not override:
                 report["issues"].append(f"任务管理表缺正式规则链接：{slot}")
                 continue
@@ -163,14 +195,14 @@ def collect(args):
     output.mkdir(parents=True, exist_ok=False)
     index = output / "材料索引.json"
     try:
-        discover(args.type, index)
+        discover(args.type, index, bool(args.annotation))
     except MATERIAL_ERRORS as exc:
         finish_fetch(output / "取件", {"contract_type":args.type, "initial_status":None,
                                         "route":"discovery_failed", "issues":[str(exc)]})
         return 1
     receipt = fetch(argparse.Namespace(index=index, out=output / "取件", annotation=args.annotation,
                                        rule=args.rule, other_rule=args.other_rule))
-    if receipt["status"] == "failed":
+    if receipt["status"] != "ready":
         return 1
     checks = [{"path":item["local_path"], "name":item["name"], "sha256":item["sha256"],
                "file_token":item["file_token"], "match":None, "reason":""} for item in receipt["contracts"]]
@@ -535,6 +567,7 @@ def publish(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    risk_commands = review_risk.add_commands(commands)
     scan = commands.add_parser("discover", help="用已授权的飞书 CLI 定位合同类型、状态和来源")
     scan.add_argument("--type", required=True)
     scan.add_argument("--out", type=Path, required=True)
@@ -583,11 +616,13 @@ def main():
     upload.add_argument("--confirm", action="store_true", help="用户已明确确认本次目标与写入方式")
     upload.add_argument("--out", type=Path, required=True, help="保存飞书写入回执或只读预览")
     args = parser.parse_args()
+    if args.command in risk_commands:
+        return risk_commands[args.command](args) or 0
     if args.command == "discover":
         discover(args.type, args.out)
         return 0
     if args.command == "fetch":
-        return int(fetch(args)["status"] == "failed")
+        return int(fetch(args)["status"] != "ready")
     return {"collect":collect, "prepare":prepare, "receive":receive,
             "preflight":preflight, "publish":publish}[args.command](args) or 0
 

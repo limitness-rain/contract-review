@@ -69,7 +69,6 @@ body:has(.package-start) { min-height:100vh; background:radial-gradient(ellipse 
 .package-view .toolbar label { gap:4px; }
 .package-view .toolbar select,.package-view .toolbar input[type=search] { padding:2px 5px; }
 .package-view .toolbar #contract { max-width:min(205px,55vw); }
-.package-view .toolbar #stance { max-width:min(160px,45vw); }
 .package-view .toolbar #search { width:min(155px,55vw); }
 .package-view .pane-heading { min-height:36px; padding:4px 8px; }
 .package-view .pane-heading h2 { font-size:14px; }
@@ -87,7 +86,7 @@ body:has(.package-start) { min-height:100vh; background:radial-gradient(ellipse 
 .package-clause-actions { margin-top:5px; }
 .package-version-option { display:flex; align-items:center; gap:8px; }
 .package-version-switch { display:flex; justify-content:flex-end; align-items:center; gap:8px; margin-bottom:8px; }
-.package-version-switch span { min-width:0; overflow-wrap:anywhere; margin-right:auto; color:var(--version-ink,#244663); font-weight:650; }
+.package-version-switch span { min-width:0; overflow-wrap:anywhere; margin-right:auto; color:var(--version-ink,var(--ink)); font-weight:650; }
 .package-version-switch .package-flip { flex:none; margin-left:auto; border-color:var(--version-ink,#244663); background:var(--version-ink,#244663); color:#fff; font-weight:650; }
 .package-version-switch .package-flip:hover:not(:disabled) { background:var(--version-hover,#325b7d); }
 .package-list-source { color:var(--version-ink,var(--ink)); overflow-wrap:anywhere; }
@@ -154,12 +153,13 @@ header .header-actions { margin-left:auto; display:flex; gap:7px; flex-wrap:wrap
 .card.selected { border-color:var(--accent); }
 .package-card-stance { color:var(--version-ink,var(--ink)); font-weight:750; }
 .package-edit-form :is(input,textarea)[readonly] { background:#f0f4f0; color:var(--soft); }
-[data-contract-version="first"] { --version-paper:#eff6fc; --version-border:#b9d0e4; --version-edge:#658db1; --version-ink:#244663; --version-hover:#325b7d; --version-turn:-48deg; }
-[data-contract-version="second"] { --version-paper:#fbf3e5; --version-border:#ddc9a6; --version-edge:#a87c3d; --version-ink:#68461e; --version-hover:#805729; --version-turn:48deg; }
-:is(.doc-section,.package-card,.package-detail-content)[data-contract-version] { background:var(--version-paper); border-color:var(--version-border); box-shadow:inset 3px 0 var(--version-edge); }
-.package-card[data-contract-version].package-removed-card { border-color:#e4b9ba; }
+:is([data-contract-version="first"],[data-stance-tone="first"]) { --version-paper:#eff6fc; --version-border:#b9d0e4; --version-edge:#658db1; --version-ink:#244663; --version-hover:#325b7d; }
+:is([data-contract-version="second"],[data-stance-tone="second"]) { --version-paper:#fbf3e5; --version-border:#ddc9a6; --version-edge:#a87c3d; --version-ink:#68461e; --version-hover:#805729; }
+:is([data-contract-version="additional"],[data-stance-tone="additional"]) { --version-paper:hsl(var(--stance-hue) 40% 95%); --version-border:hsl(var(--stance-hue) 28% 82%); --version-edge:hsl(var(--stance-hue) 30% 47%); --version-ink:hsl(var(--stance-hue) 45% 26%); }
+.doc-section[data-contract-version],:is(.package-card,.package-detail-content)[data-stance-tone] { background:var(--version-paper); border-color:var(--version-border); box-shadow:inset 3px 0 var(--version-edge); }
+.package-card[data-stance-tone].package-removed-card { border-color:#e4b9ba; }
 :is(.doc-section,.row-section)[data-contract-version].active { outline-color:var(--version-edge); }
-.package-card[data-contract-version].selected { border-color:var(--version-ink); }
+.package-card[data-stance-tone].selected { border-color:var(--version-ink); }
 @media (prefers-reduced-motion:no-preference) {
   .package-version-enter { animation:package-version-turn 280ms cubic-bezier(.2,.65,.3,1); }
   @keyframes package-version-turn {
@@ -1111,10 +1111,10 @@ const lawyerSections = new Map();
 const lawyerCards = new Map();
 const packageDetailPages = new Map();
 const packageVersionChoices = new Set();
-const packageStanceChoices = new Map();
 let packagePairByContract = new Map(), packageSharedPrimary = new Set();
 let packageVersionBase, packageSectionSlots = new Map(), packageSharedRows = new Map();
 let packageSectionsByContract = new Map();
+let packageCardTones = new Map();
 const roleTitle = {student:"实习生",lawyer:"律师"};
 const packageSide = {student:"right",lawyer:"lawyer-pane"};
 
@@ -1217,7 +1217,7 @@ function initialPackageForm(usePackage) {
   word.accept = ".docx";
   word.multiple = true;
   excel.accept = ".xlsx";
-  const hint = node("p","上传全部合同 Word 和一份统一标注集。工具按立场显示标注，并自动识别同名的两份立场版本。","small");
+  const hint = node("p","一次上传全部合同 Word 和一份统一标注集。两份立场版本用相同的文件名主体，后缀对应标注集中的立场。","small");
   const wordField = labelled("合同 Word（.docx）",word,"package-start-field");
   const excelField = labelled("标注集 Excel（.xlsx）",excel,"package-start-field");
   const result = node("div",null,"package-start-preview");
@@ -1413,7 +1413,6 @@ function mountPackage(session,actor) {
   packageSharedRows = new Map(shared.flatMap(([a,b])=>[[a,b],[b,a]]));
   packageSharedPrimary = new Set(shared.map(([a])=>a));
   packageVersionChoices.clear();
-  packageStanceChoices.clear();
   const changedRows = model.stage==="final" ? session.baseline.rows.filter(row=>baselineLawyerChange(row,session.baseline.stage)) :
     model.rows.filter(row=>row.added_by || row.review_history?.length ||
     packageRoles.some(role=>row[role]?.note?.trim()) ||
@@ -1954,64 +1953,44 @@ function packagePairName(pair) {
   const common = first.slice(0,length).replace(/[\s_.·—–+（(【-]+$/u,"");
   return (common || first)+"（双版本）";
 }
-function packageVersionOptions() {
-  const pair = activePackagePair();
-  if (!pair) {
-    const stances = new Set(model.rows.filter(row=>row.contract_id===contractId).map(row=>get(row,"立场")).filter(Boolean));
-    if (stances.size<2) {
-      const applicable = model.applicability?.[contractId];
-      for (const rule of model.rules) {
-        if (rule.stance && (!applicable || applicable.includes(rule.id))) stances.add(rule.stance);
-      }
-    }
-    return [...stances].sort().map(stance=>[stance,stance]);
-  }
+function packageVersionLabels(pair) {
+  if (!pair) return new Map();
   const versions = pair.contracts.map(id=>{
-    const stances = new Set(model.rows.filter(row=>row.contract_id===id).map(row=>get(row,"立场")).filter(Boolean));
+    const stances = new Set(model.rows.filter(row=>row.contract_id===id).map(row=>get(row,"立场").trim()).filter(Boolean));
     return [id,stances.size===1 ? [...stances][0] : ""];
   });
-  if (versions[0][1] && versions[1][1] && versions[0][1]!==versions[1][1]) return versions;
-  return versions.map(([id])=>[id,contractById.get(id).name.replace(/\.docx$/i,"")]);
+  return new Map(versions[0][1] && versions[1][1] && versions[0][1]!==versions[1][1] ? versions : []);
 }
 function configurePackageContract(id) {
-  contractId = packagePairByContract.get(id)?.contracts[0] || (contractById.has(id) ? id : "");
-  const input = byId("stance");
-  input.replaceChildren();
-  option(input,"","全部");
-  for (const [value,label] of packageVersionOptions()) option(input,value,label);
-  setPackageVersionFilter("");
+  const next = packagePairByContract.get(id)?.contracts[0] || (contractById.has(id) ? id : "");
+  if (next!==contractId) packageVersionChoices.clear();
+  contractId = next;
 }
-function setPackageVersionFilter(version,keepChoices=false) {
-  const input = byId("stance");
-  input.value = input.dataset.past = version;
-  if (keepChoices) return;
-  packageStanceChoices.clear();
-  packageVersionChoices.clear();
-  const pair = activePackagePair();
-  if (pair && version===pair.contracts[1]) {
-    for (const [id] of pair.sections) packageVersionChoices.add(id);
-  }
-}
-function stylePackageVersion(element,source,stanceIndex) {
-  const version = packagePairByContract.get(source)?.contracts.indexOf(source) ?? stanceIndex;
-  if (version===0 || version===1) element.dataset.contractVersion = version===0 ? "first" : "second";
-}
-function packageDistinctCardSections(contractIds) {
-  const wanted = new Set(contractIds);
-  const sections = new Set();
-  const roles = showLawyerColumn() ? packageRoles : ["student"];
+function packageStanceTones() {
+  const stances = new Set(model.rules.map(rule=>rule.stance.trim()).filter(Boolean));
   for (const row of model.rows) {
-    if (packageSharedRows.has(row.id) || (!requiresReview(row) && !showFinalPackageChange(row))) continue;
-    for (const role of roles) {
-      if (role==="student" && model.stage!=="student" && row.lawyer_review_only===true) continue;
-      const view = roleProjection(row,role);
-      if (!wanted.has(view.contract_id) || packageCardHidden(row,role,view)) continue;
-      const source = packageSectionsByContract.get(view.contract_id) || [];
-      const section = view.section_id || resolveSection(view,source);
-      if (section) sections.add(packageSectionKey(view.contract_id,section));
+    for (const fields of [row.fields,row.original_fields,row.submitted_fields,row.student_view?.fields,row.lawyer_view?.fields]) {
+      const stance = fields?.["立场"]?.trim();
+      if (stance) stances.add(stance);
     }
   }
-  return sections;
+  if (stances.size<2) return new Map();
+  return new Map([...stances].sort().map((stance,index)=>[stance,index]));
+}
+function setPackageTone(element,attribute,index) {
+  if (index===undefined) return;
+  element.dataset[attribute] = index===0 ? "first" : index===1 ? "second" : "additional";
+  if (index>1) element.style.setProperty("--stance-hue",String((index*137.5)%360));
+}
+function stylePackageVersion(element,source,stanceLabels) {
+  const version = packagePairByContract.get(source)?.contracts.indexOf(source);
+  if (version===undefined) return;
+  const tone = packageCardTones.get(stanceLabels.get(source)?.trim()) ?? version;
+  setPackageTone(element,"contractVersion",tone);
+  element.style.setProperty("--version-turn",version===0 ? "-48deg" : "48deg");
+}
+function stylePackageRiskCard(element,view) {
+  setPackageTone(element,"stanceTone",packageCardTones.get(get(view,"立场").trim()));
 }
 function packageSectionPlan() {
   if (packageVersionBase!==contractId) {
@@ -2026,15 +2005,7 @@ function packageSectionPlan() {
   const sections = packageSectionsByContract.get(contractId) || [];
   packageSectionSlots = new Map();
   const pair = activePackagePair();
-  const version = pair ? byId("stance").value : "";
   const listVersions = packageViewMode==="list";
-  const hasSingleWordFlip = !pair && !listVersions && packageVersionOptions().length>1;
-  const distinct = hasSingleWordFlip ? packageDistinctCardSections([contractId]) : new Set();
-  if (pair && !listVersions) for (const row of model.rows) {
-    if (row.scope==="slice" && (requiresReview(row) || showFinalPackageChange(row)) && !packageSharedRows.has(row.id)) {
-      distinct.add(packageSectionKey(row.contract_id,row.section_id));
-    }
-  }
   const side = pair ? pair.contracts.indexOf(contractId) : -1;
   const otherId = side<0 ? "" : pair.contracts[1-side];
   const counterparts = new Map(side<0 ? [] : pair.sections.map(ids=>[ids[side],ids[1-side]]));
@@ -2049,42 +2020,44 @@ function packageSectionPlan() {
   function appendPeerOnly(beforeId) {
     while (nextPeer<peerSections.length && peerSections[nextPeer].id!==beforeId) {
       const actual = peerSections[nextPeer++];
-      if (version && version!==otherId) continue;
       appendSection(actual,otherId,otherId+":"+actual.id,{standalone:true});
     }
   }
   for (const section of sections) {
     const other = otherSections.get(counterparts.get(section.id));
+    const sameText = other?.text===section.text;
     if (other) {
       appendPeerOnly(other.id);
       nextPeer++;
     }
     if (pair && listVersions) {
-      if (!version || version===contractId) appendSection(section,contractId,section.id,{standalone:true});
-      if (other && (!version || version===otherId)) appendSection(other,otherId,otherId+":"+other.id,{standalone:true});
+      appendSection(section,contractId,section.id,{standalone:true,sameText});
+      if (other) appendSection(other,otherId,otherId+":"+other.id,{standalone:true,sameText});
       continue;
     }
-    if (!other && version && version!==contractId) continue;
-    const flipped = !!other && packageVersionChoices.has(section.id);
-    const actual = flipped ? other : section;
-    const source = flipped ? otherId : contractId;
-    const hasOwnCards = distinct.has(packageSectionKey(contractId,section.id));
-    const switchable = pair ? !!other && (section.text!==other.text || hasOwnCards ||
-      distinct.has(packageSectionKey(otherId,other.id))) : hasSingleWordFlip && hasOwnCards;
-    appendSection(actual,source,section.id,{otherId:flipped ? contractId : otherId,switchable,standalone:!!otherId && !other});
+    if (sameText) {
+      // Both source versions anchor their cards to the same displayed text.
+      packageSectionSlots.set(packageSectionKey(otherId,other.id),section.id);
+      appendSection(section,contractId,section.id,{sameText,alternate:{source:otherId,section:other}});
+    } else {
+      const flipped = !!other && packageVersionChoices.has(section.id);
+      appendSection(flipped ? other : section,flipped ? otherId : contractId,section.id,{
+        flipTo:other ? (flipped ? contractId : otherId) : "",standalone:!!otherId && !other
+      });
+    }
   }
   appendPeerOnly();
   return plan;
 }
 function revealPackageRowVersion(row,sectionId=row.section_id) {
+  if (packageViewMode==="list") return;
   const pair = activePackagePair();
   const side = pair?.contracts.indexOf(row.contract_id);
   if (side!==0 && side!==1) return;
-  const filtered = byId("stance").value;
-  if (filtered && filtered!==row.contract_id) setPackageVersionFilter("",true);
-  if (packageViewMode==="list") return;
   const ids = pair.sections.find(sections=>sections[side]===sectionId);
   if (!ids) return;
+  const [first,second] = pair.contracts.map((id,index)=>contractById.get(id).sections.find(section=>section.id===ids[index]));
+  if (!first || !second || first.text===second.text) return;
   if (side===1) packageVersionChoices.add(ids[0]);
   else packageVersionChoices.delete(ids[0]);
 }
@@ -2099,21 +2072,13 @@ function packageSlot(view) {
   const actual = packageSectionsByContract.get(view.contract_id);
   const section = actual?.some(section=>section.id===view.section_id) ? view.section_id : resolveSection(view,actual || []);
   if (section) return packageSectionSlots.get(packageSectionKey(view.contract_id,section));
-  const version = byId("stance").value;
-  if ((!version || version===view.contract_id) && pair.contracts.includes(view.contract_id)) return "";
+  if (pair.contracts.includes(view.contract_id)) return "";
 }
 function flipPackageVersion(id) {
   if (openEditor) return setNotice("请先应用或取消当前编辑，再切换立场。");
   if (packageDetailPages.size) capturePackageChange("保存复核意见");
   for (const role of [...packageDetailPages.keys()]) closePackageDetail(role);
-  if (activePackagePair()) {
-    setPackageVersionFilter("",true);
-    if (!packageVersionChoices.delete(id)) packageVersionChoices.add(id);
-  } else {
-    const values = packageVersionOptions().map(([value])=>value);
-    const current = packageStanceChoices.get(id) ?? byId("stance").value;
-    packageStanceChoices.set(id,values[(values.indexOf(current)+1)%values.length]);
-  }
+  if (!packageVersionChoices.delete(id)) packageVersionChoices.add(id);
   selected = "";
   render(true);
   animatePackageFlip(id);
@@ -2327,8 +2292,6 @@ function canComparePackageRole(row,role,lawyerVisible=showLawyerColumn()) {
 }
 function shownPackageRows(role) {
   const scope = byId("scope").value, status = byId("review-status").value;
-  const pair = activePackagePair();
-  const stance = pair ? "" : byId("stance").value;
   const search = byId("search").value.trim().toLowerCase();
   const changeStatus = byId("change-status").value;
   if (role==="lawyer" && !showLawyerColumn()) return [];
@@ -2345,8 +2308,6 @@ function shownPackageRows(role) {
     const removal = roleRemoval(row,view,role);
     if (!pending && !packageCardType(view.fields) &&
         !requiresReview(row) && !removal && !awaitingHandoffConfirmation(row,role) && changeStatus!=="changed") return [];
-    const desiredStance = packageStanceChoices.get(section) ?? stance;
-    if (desiredStance && get(view,"立场")!==desiredStance) return [];
     if (!matchesPackageRiskFilter(removal?.before ? {...view,fields:removal.before} : view,scope)) return [];
     if (role===model.stage && status && !!row[role]?.reviewed!==(status==="reviewed")) return [];
     if (search && ![row.id,get(view,"风险名称"),get(view,keyEvidence)].some(text=>text.toLowerCase().includes(search))) return [];
@@ -2399,7 +2360,7 @@ function packageCardMetadata(view,tail) {
 function packageCard(row,view,role,lawyerVisible,next) {
   const card = node("article",null,"card package-card");
   card.dataset.row = row.id;
-  stylePackageVersion(card,view.contract_id);
+  stylePackageRiskCard(card,view);
   const status = packageReviewStatus(row,role);
   const head = node("div",null,"card-head");
   head.append(node("strong",get(view,"风险名称") || "缺少风险名称"),packageCardBadges(row,view,role,status));
@@ -2614,7 +2575,7 @@ function updatePackageDetail(page,row,force=false) {
   advance.disabled = !next;
   navigation.append(advance);
   const body = node("article",null,"card package-detail-content");
-  stylePackageVersion(body,view.contract_id);
+  stylePackageRiskCard(body,view);
   const status = packageReviewStatus(row,role);
   const heading = node("div",null,"card-head");
   heading.append(node("h3",get(view,"风险名称") || "缺少风险名称"),packageCardBadges(row,view,role,status));
@@ -2708,33 +2669,34 @@ function renderPackage(keepScroll) {
   rowElements.clear();
   lawyerCards.clear();
   const pair = activePackagePair();
-  const version = pair ? byId("stance").value : "";
-  const stanceOptions = packageVersionOptions();
-  const stanceLabels = new Map(stanceOptions);
-  const sameWordFlip = packageViewMode==="flip" && !pair && stanceOptions.length>1;
-  const stanceIndices = new Map(stanceOptions.map(([value],index)=>[value,index]));
+  const stanceLabels = packageVersionLabels(pair);
+  const sources = pair?.contracts || [contractId];
+  packageCardTones = packageStanceTones();
   if (!pair && contractById.has(contractId) &&
       !model.rows.some(row=>row.contract_id===contractId)) {
     fragments[0].append(node("p","本包保留了这份评测合同，现有标注集没有该附件的记录。","package-lane-empty"));
   }
-  for (const id of version ? [version] : pair?.contracts || [contractId]) {
-    const contract = contractById.get(id);
-    if (contract) appendPackageContractContext(fragments[0],contract);
+  const context = sources.map(id=>contractById.get(id)).filter(Boolean).map(contract=>{
+    const text = [...(contract.context_blocks || []).map(block=>block.text),contract.preamble,contract.signature]
+      .filter(value=>typeof value==="string" && value.trim()).join("\n");
+    return {contract,text};
+  });
+  const sameContext = !!pair && context[0]?.text===context[1]?.text;
+  for (const {contract,text} of context) {
+    if (text) appendPackageContractContext(fragments[0],contract,text,sameContext,stanceLabels);
   }
-  for (const {id,actual:section,source,otherId,switchable,standalone} of sections) {
+  for (const {id,actual:section,source,flipTo,standalone,sameText,alternate} of sections) {
     const block = node("section",null,"doc-section");
-    const stance = packageStanceChoices.get(id) ?? byId("stance").value;
-    const sideIndex = sameWordFlip ? stanceIndices.get(stance) ?? 0 : undefined;
-    stylePackageVersion(block,source,sideIndex);
+    if (!sameText) stylePackageVersion(block,source,stanceLabels);
     const marks = packageRoles.flatMap(role=>grouped[role].get(id).filter(item=>get(item.view,riskField)==="是").map(item=>item.view));
-    if (switchable || standalone) {
+    if (flipTo || standalone) {
       const bar = node("div",null,"package-version-switch");
       const filename = contractById.get(source).name;
-      const label = sameWordFlip ? stance || "全部立场" : [stanceLabels.get(source),filename].filter(Boolean).join(" · ");
+      const label = [stanceLabels.get(source),filename].filter(Boolean).join(" · ");
       bar.append(node("span",label,"small"));
-      if (switchable) {
+      if (flipTo) {
         const flip = button("切换立场",()=>flipPackageVersion(id),"package-flip");
-        flip.title = sameWordFlip ? "切换本条的标注立场" : "查看 "+contractById.get(otherId).name+" 的对应条款";
+        flip.title = "查看 "+contractById.get(flipTo).name+" 的对应条款";
         bar.append(flip);
       }
       block.append(bar);
@@ -2746,7 +2708,7 @@ function renderPackage(keepScroll) {
       const actions = node("div",null,"row-actions package-clause-actions");
       for (const [label,triggered] of [["新增风险批注",true],["新增未触发风险批注",false]]) {
         let selection = "";
-        const add = button(label,()=>addAnnotation(section,selection,false,triggered,source));
+        const add = button(label,()=>addAnnotation(section,selection,false,triggered,source,alternate));
         add.onpointerdown = event=>{
           const source = selectedClauseEvidence();
           selection = source?.sectionId===id ? source.text : "";
@@ -2767,13 +2729,12 @@ function renderPackage(keepScroll) {
     const ordered = [...grouped[role].values()].flat();
     if (!ordered.length) fragment.append(node("p","当前筛选下暂无批注卡片。","package-lane-empty"));
     let cardIndex = 0;
-    for (const {id,actual,source} of [...sections,{id:"",actual:{heading:"整份合同与未定位批注"},source:contractId}]) {
+    for (const {id,actual,source,sameText} of [...sections,{id:"",actual:{heading:"整份合同与未定位批注"}}]) {
       const entries = grouped[role].get(id);
       if (!entries.length) continue;
       const group = node("section",null,"row-section");
       group.dataset.section = id;
-      const stance = packageStanceChoices.get(id) ?? byId("stance").value;
-      stylePackageVersion(group,source,sameWordFlip ? stanceIndices.get(stance) : undefined);
+      if (!sameText) stylePackageVersion(group,source,stanceLabels);
       const heading = node("h3",actual.heading);
       if (pair && packageViewMode==="list" && id) {
         group.append(node("p",[stanceLabels.get(source),contractById.get(source).name].filter(Boolean).join(" · "),"package-list-source small"));
@@ -2781,7 +2742,6 @@ function renderPackage(keepScroll) {
       group.append(heading);
       for (const {row,view} of entries) {
         const card = packageCard(row,view,role,lawyerVisible,ordered[++cardIndex]?.row);
-        if (sameWordFlip) stylePackageVersion(card,source,stanceIndices.get(get(view,"立场")));
         group.append(card);
         cards.set(row.id,card);
       }
@@ -2811,19 +2771,12 @@ function renderPackage(keepScroll) {
   progress();
 }
 
-function appendPackageContractContext(fragment,contract) {
-  const context = contract.context_blocks || [];
-  const texts = context.map(block=>block.text);
-  for (const extra of [contract.preamble,contract.signature]) {
-    if (typeof extra==="string" && extra.trim()) texts.push(extra);
-  }
-  if (texts.length) {
-    const details = node("details",null,"doc-section");
-    stylePackageVersion(details,contract.id);
-    const title = packagePairByContract.has(contract.id) ? contract.name+" · 合同上下文" : "合同前言、签署及补充上下文";
-    details.append(node("summary",title),node("p",texts.join("\n"),"doc-text"));
-    fragment.append(details);
-  }
+function appendPackageContractContext(fragment,contract,text,sameText,stanceLabels) {
+  const details = node("details",null,"doc-section");
+  if (!sameText) stylePackageVersion(details,contract.id,stanceLabels);
+  const title = packagePairByContract.has(contract.id) ? contract.name+" · 合同上下文" : "合同前言、签署及补充上下文";
+  details.append(node("summary",title),node("p",text,"doc-text"));
+  fragment.append(details);
 }
 
 function finalPackageIssues(project,requireOpinion=true) {
@@ -3281,11 +3234,9 @@ function resolveSection(row, sections) {
 function filterRows() {
   const scope = byId("scope").value;
   const status = byId("review-status").value;
-  const stance = byId("stance")?.value;
   const query = byId("search").value.trim().toLowerCase();
   return model.rows.filter(row => {
     if (contractId ? row.contract_id !== contractId : contractById.has(row.contract_id)) return false;
-    if (stance && get(row, "立场") !== stance) return false;
     if (query && ![row.id, get(row, "风险名称"), get(row, keyEvidence)].some(value => value.toLowerCase().includes(query))) return false;
     if (packageMode) {
       if (removedRisk(row) || !requiresReview(row) || !matchesPackageRiskFilter(row,scope)) return false;
@@ -3303,7 +3254,7 @@ function filterRows() {
 function resetRiskFilters(id) {
   if (packageMode) configurePackageContract(id);
   else contractId = contractById.has(id) ? id : "";
-  const values = {contract:contractId,scope:"review","review-status":"","change-status":"",stance:"",search:""};
+  const values = {contract:contractId,scope:"review","review-status":"","change-status":"",search:""};
   for (const [key,value] of Object.entries(values)) {
     const input = byId(key);
     if (!input) continue;
@@ -4244,7 +4195,7 @@ function addLawyerAnnotation() {
   const sectionId = source?.sectionId || activeSectionId || (row ? resolveSection(row,sections) : "");
   addAnnotation(sections.find(section=>section.id===sectionId),source?.text || "",true);
 }
-function addAnnotation(section, evidenceText="", chooseSection=false, triggered=true, sourceId=contractId) {
+function addAnnotation(section, evidenceText="", chooseSection=false, triggered=true, sourceId=contractId, alternate) {
   if (openEditor) return setNotice("请先应用或取消当前编辑。");
   if (!contractById.has(sourceId)) return setNotice("请先选择实际合同。");
   const slice = chooseSection || !!section;
@@ -4262,13 +4213,14 @@ function addAnnotation(section, evidenceText="", chooseSection=false, triggered=
     }
   };
   const pair = packageMode && activePackagePair();
-  if (!slice && pair) {
+  if (pair && (!slice || alternate)) {
+    const sections = alternate ? new Map([[sourceId,section],[alternate.source,alternate.section]]) : null;
     const version = choose("add-contract-version",[["","请选择合同版本"],...pair.contracts.map(id=>[id,contractById.get(id).name])]);
     version.setAttribute("aria-label","合同版本");
-    sourceId = byId("stance").value;
-    version.value = sourceId;
+    sourceId = "";
     version.onchange = () => {
       sourceId = version.value;
+      if (sections) section = sections.get(sourceId);
       refreshRules();
     };
     dialog.append(labelled("合同版本",version));
@@ -4505,9 +4457,6 @@ function launch() {
   const contractLabel = packageMode ? "合同附件名称" : "合同";
   contract.setAttribute("aria-label",contractLabel);
   contract.value = contractId;
-  const stances = [...new Set(model.rows.map(row=>get(row,"立场")).filter(Boolean))].sort();
-  const stance = choose("stance",[["","全部"],...(packageMode ? packageVersionOptions() : stances.map(value=>[value,value]))]);
-  stance.setAttribute("aria-label","立场");
   const changeStatus = packageMode ? choose("change-status",[["","全部"],["changed","有改动"],["unchanged","未改动"]]) : null;
   changeStatus?.setAttribute("aria-label","改动状态");
   const scope = choose("scope",packageMode ?
@@ -4529,7 +4478,7 @@ function launch() {
   };
   const reviewFilter = labelled(packageMode ? "当前栏复核状态" : "复核状态",reviewStatus);
   reviewFilter.hidden = packageMode && model.stage==="final";
-  toolbar.append(labelled(contractLabel,contract),labelled("立场",stance),labelled("风险类型",scope),reviewFilter);
+  toolbar.append(labelled(contractLabel,contract),labelled("风险类型",scope),reviewFilter);
   if (changeStatus) toolbar.append(labelled("改动状态",changeStatus));
   toolbar.append(labelled("搜索",search),labelled("联动滚动",sync));
   const study = node("main",null,hasLawyerPane ? "study with-lawyer" : "study");
@@ -4595,20 +4544,17 @@ function launch() {
   resize.observe(byId("left"));
   resize.observe(byId("right"));
   if (packageMode) resize.observe(byId("lawyer-pane"));
-  const filters = [contract,stance,scope,reviewStatus,changeStatus,search].filter(Boolean);
+  const filters = [contract,scope,reviewStatus,changeStatus,search].filter(Boolean);
   for (const input of filters) input.addEventListener(input===search ? "input" : "change",() => {
     if (openEditor) {
       input.value = input.dataset.past || "";
       return setNotice("请先应用或取消当前编辑，再切换筛选。");
     }
-    const versionChange = packageMode && input===stance;
-    const keepScroll = versionChange || input===changeStatus;
-    const anchor = activeSectionId;
+    const keepScroll = input===changeStatus;
     if (keepScroll) {
       for (const role of [...packageDetailPages.keys()]) closePackageDetail(role);
       input.focus({preventScroll:true});
     }
-    if (versionChange) setPackageVersionFilter(input.value);
     if (input===contract) {
       if (packageMode) configurePackageContract(contract.value);
       else contractId = contract.value;
@@ -4617,7 +4563,6 @@ function launch() {
     selected = "";
     lastUserSide = "left";
     render(keepScroll);
-    if (versionChange && input.value) animatePackageFlip(leftSections.has(anchor) ? anchor : leftSections.keys().next().value);
   });
   for (const input of filters) input.dataset.past = input.value;
 

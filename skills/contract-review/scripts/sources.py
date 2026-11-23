@@ -26,6 +26,9 @@ TABLES = {
 }
 BASE_URL = f"https://zhishuqifei.feishu.cn/base/{BASE}"
 FEISHU_DOMAINS = ("feishu.cn", "larksuite.com", "larkoffice.com")
+RULE_SLOTS = ("整理好的规则", "另一方立场规则")
+ORIGINAL_FIELD = "合同样本（最低数量10）"
+EVALUATION_FIELD = "用于评测的合同"
 
 
 def save_json(path, data):
@@ -94,9 +97,13 @@ def list_arguments(base_token, table_id):
     return ("base", "+record-list", "--base-token", base_token, "--table-id", table_id)
 
 
-def class_record(kind, contract_type):
+def class_record(kind, contract_type, fields=None):
     table_id, key, field_ids = TABLES[kind]
-    projection = [arg for field_id in field_ids for arg in ("--field-id", field_id)]
+    return matching_record(table_id, key, contract_type, fields or field_ids)
+
+
+def matching_record(table_id, key, contract_type, fields):
+    projection = [arg for field_id in fields for arg in ("--field-id", field_id)]
     matches, seen, offset = [], set(), 0
     while True:
         page = run_cli(*list_arguments(BASE, table_id), "--format", "json", "--limit", "200",
@@ -134,7 +141,53 @@ def cell_links(cell):
                               for url in re.findall(r"""https?://[^\s<>()\[\]{}"'，。；]+""", cell)))
 
 
-def resolve(contract_type):
+def task_rule_links(record):
+    primary, other = RULE_SLOTS
+    return {primary: cell_links(record.get(primary)),
+            other: cell_links(record.get(other) or record.get("另一立场规则"))}
+
+
+def plan_rule_links(plan):
+    links = {slot: cell_links(plan.get(slot)) for slot in RULE_SLOTS}
+    unresolved = [slot for slot, urls in links.items() if not urls]
+    if not unresolved:
+        return links, {}
+    plan_table, plan_key, _ = TABLES["plan"]
+    fields = run_cli("base", "+field-list", "--base-token", BASE, "--table-id", plan_table)["fields"]
+    definitions = {field["name"]: field for field in fields}
+    lookups = {}
+    for slot in unresolved:
+        field = definitions.get(slot, {})
+        if field.get("type") != "lookup":
+            continue
+        conditions = field.get("where", {}).get("conditions", [])
+        if (len(conditions) != 1 or len(conditions[0]) != 3
+                or conditions[0][1:] != ["==", {"field": plan_key, "type": "field_ref"}]
+                or field.get("aggregate") != "raw_value" or not field.get("from") or not field.get("select")):
+            raise ValueError(f"计划表 v07 的「{slot}」查找引用无法按合同类型唯一追溯，请核对字段定义。")
+        lookups[slot] = (field["from"], conditions[0][0], field["select"])
+    if not lookups:
+        return links, {}
+    tables = run_cli("base", "+table-list", "--base-token", BASE)["tables"]
+    groups = {}
+    for slot, (source, key, column) in lookups.items():
+        ids = {table["id"] for table in tables if source in (table["id"], table["name"])}
+        if len(ids) != 1:
+            raise ValueError(f"计划表 v07 的「{slot}」查找来源表无法唯一定位：{source}")
+        groups.setdefault((ids.pop(), key), {})[slot] = column
+    traces = {}
+    for (table_id, key), columns in groups.items():
+        projection = tuple(dict.fromkeys([key, *columns.values()]))
+        row = matching_record(table_id, key, select_text(plan[plan_key]), projection)
+        if not row:
+            raise ValueError(f"计划表 v07 的查找来源表 {table_id} 没有本合同类型的记录。")
+        for slot, column in columns.items():
+            links[slot] = cell_links(row.get(column))
+            traces[slot] = {"table_id": table_id, "record_id": row["record_id"], "field": column}
+    return links, traces
+
+
+def resolve(contract_type, annotation_override=False):
     labels = {"plan":"计划表", "tasks":"任务管理表", "samples":"合同样本库"}
 
     def read_source(kind):
@@ -145,18 +198,19 @@ def resolve(contract_type):
         except (ValueError, OSError, KeyError, TypeError) as exc:
             raise ValueError(f"读取「{labels[kind]}」失败：{exc}") from exc
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        plan, tasks, samples = pool.map(read_source, TABLES)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        plan, samples = pool.map(read_source, ("plan", "samples"))
     if not plan:
         raise ValueError(f"计划表里没有找到合同类型“{contract_type}”。请使用表里的完整名称。")
     annotations = cell_links(plan.get("标注和评测集"))
-    rules = {"整理好的规则": cell_links(tasks.get("整理好的规则")),
-             "另一方立场规则": cell_links(tasks.get("另一方立场规则") or tasks.get("另一立场规则"))}
-    original = samples.get("合同样本（最低数量10）") or []
-    evaluation = samples.get("用于评测的合同") or []
+    tasks = read_source("tasks") if annotations or annotation_override else {}
+    rules = task_rule_links(tasks)
+    original = samples.get(ORIGINAL_FIELD) or samples.get("合同样本") or []
+    evaluation = samples.get(EVALUATION_FIELD) or []
     state = select_text(plan.get("初标状态"))
     issues = [
-        f"任务管理表的“{name}”没有可读取的链接。" for name, links in rules.items() if not links
+        f"任务管理表的“{name}”没有可读取的链接。"
+        for name, links in rules.items() if (annotations or annotation_override) and not links
     ]
     if not original and not evaluation:
         issues.append("样本库没有合同附件。")
@@ -170,6 +224,7 @@ def resolve(contract_type):
         "statuses": {"initial": state, "rule": select_text(plan.get("规则编写状态")),
                      "review": select_text(plan.get("复核状态"))},
         "annotation_urls": annotations,
+        "annotation_cell": plan.get("标注和评测集"),
         "rule_urls": rules,
         "attachments": {"original": original, "evaluation": evaluation},
         "record_ids": {"plan": plan["record_id"], "tasks": tasks.get("record_id"),
