@@ -86,11 +86,12 @@ function packageRequiresCardReview(row) {
   return type!=="" && type!=="unrelated";
 }
 function packageWorkbookSelection(project) {
-  if (project.stage!=="final") return {rows:project.rows,removed:0};
+  if (project.stage!=="final") return {rows:project.rows,removed:0,replaced:0};
   const paired = new Set(packagePairs(project).flatMap(pair=>pair.contracts));
-  const rows = project.rows.filter(row=>!(paired.has(row.contract_id) &&
+  const active = project.rows.filter(row=>!row.replaced_by);
+  const rows = active.filter(row=>!(paired.has(row.contract_id) &&
     row.lawyer?.reviewed===true && packageCurrentRemoval(row)));
-  return {rows,removed:project.rows.length-rows.length};
+  return {rows,removed:active.length-rows.length,replaced:project.rows.length-active.length};
 }
 
 const crcTable = Uint32Array.from({length:256},(_,index)=>{
@@ -227,6 +228,13 @@ function replayPackage(baseline,events) {
   for (const key of ["review_questions","lawyer_suggestions","paths","checks","risk_changes"]) {
     requirePackage(project[key]==null || Array.isArray(project[key]),"复核 JSON 的 "+key+" 应为数组。");
   }
+  for (const row of project.rows) {
+    if (!row.replaced_by) continue;
+    const replacement = rows.get(row.replaced_by);
+    requirePackage(packageCardType(row.fields)==="unrelated" && replacement?.added_by && !replacement.replaced_by &&
+      ["contract_id","rule_id","matter_id"].every(key=>(row[key] || "")===(replacement[key] || "")) &&
+      (!row.section_id || row.section_id===replacement.section_id),"新增卡片与原切片记录未能对应："+row.id);
+  }
   requirePackage([...(project.review_questions || []),...(project.lawyer_suggestions || [])].every(item=>item && typeof item.text==="string"),"问答或建议格式无效。");
   if (project.version_pairs!=null || project.version_pair) validatePackageVersionPair(baseline,project);
   delete project.shared_rows;
@@ -358,7 +366,7 @@ function workbookForProject(project) {
     requirePackage(typeof value==="string" && value.length<=32767 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/.test(value),"Excel 字段长度或字符超出支持范围。");
     return value.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll("\r","&#13;");
   }
-  const {rows,removed} = packageWorkbookSelection(project);
+  const {rows,removed,replaced} = packageWorkbookSelection(project);
   const lines = [project.fields,...rows.map(row=>project.fields.map(field=>row.fields[field]))];
   const data = lines.map((values,index)=>{
     const row = index+1;
@@ -370,5 +378,5 @@ function workbookForProject(project) {
   entries[name] = entries[name].replace(/<sheetData>.*?<\/sheetData>/s,()=>"<sheetData>"+data+"</sheetData>").replaceAll("A1:O1","A1:O"+lines.length);
   const blob = makeStoredZip(new Map(Object.entries(entries).map(([entry,value])=>[entry,utf8.encode(value)])),
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  return {blob,count:rows.length,removed};
+  return {blob,count:rows.length,removed,replaced};
 }

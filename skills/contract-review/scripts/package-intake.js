@@ -154,10 +154,14 @@ function wordBodyBlocks(container,numberLabel,keepEmpty=false) {
   const result = [];
   for (const item of container.children) {
     const tag = item.localName;
-    if (tag==="p" || tag==="tbl") {
-      const body = tag==="p" ? wordParagraphText(item) : wordTableText(item,numberLabel);
-      const text = tag==="p" && body.trim() ? numberLabel(item)+body : body;
-      if (keepEmpty || text.trim()) result.push({kind:tag==="p"?"paragraph":"table",text});
+    if (tag==="p") {
+      const text = wordParagraphText(item);
+      if (text.trim()) result.push({kind:"paragraph",text:numberLabel(item)+text});
+      else if (keepEmpty) result.push({kind:"paragraph",text});
+    } else if (tag==="tbl") {
+      const table_rows = wordTableRows(item,numberLabel);
+      const text = table_rows.map(row=>row.text).join("\n");
+      if (keepEmpty || text.trim()) result.push({kind:"table",text,table_rows});
     } else if (["sdt","sdtContent","customXml","ins"].includes(tag)) {
       result.push(...wordBodyBlocks(item,numberLabel,keepEmpty));
     }
@@ -177,17 +181,20 @@ function wordParagraphText(element) {
   read(element);
   return parts.join("");
 }
-function wordTableText(table,numberLabel) {
+function wordTableRows(table,numberLabel) {
   return officeChildren(table,"tr").map(row=>{
     const values = [];
+    let continues_merge = false;
     for (const cell of officeChildren(row,"tc")) {
       values.push(wordBodyBlocks(cell,numberLabel,true).map(block=>block.text).join("\u2028"));
-      const span = officeChild(officeChild(cell,"tcPr"),"gridSpan");
-      const width = Number(span?.getAttributeNS(span.namespaceURI,"val"));
+      const props = officeChild(cell,"tcPr");
+      const merge = officeChild(props,"vMerge");
+      continues_merge ||= !!merge && (wordAttr(merge,"val") || "continue")==="continue";
+      const width = Number(wordValue(props,"gridSpan"));
       if (Number.isInteger(width) && width>1) values.push(...Array(Math.min(width-1,100)).fill(""));
     }
-    return values.join("\t");
-  }).join("\n");
+    return {text:values.join("\t"),continues_merge};
+  });
 }
 async function readIntakeWord(archive) {
   const document = await archive.xml("word/document.xml");
@@ -249,48 +256,154 @@ async function readIntakeWorkbook(archive) {
   return {rows,sheet:sheet.getAttribute("name"),columns:Object.fromEntries(packageFieldNames.map((field,index)=>[field,columns[index]]))};
 }
 
-// Match complete clauses at Word paragraph/table boundaries in document order.
-function locateIntakeSections(contract,clauses) {
+function intakeWordLayout(blocks) {
+  const units = [], textParts = [];
   const offsets = [0];
-  const text = contract.blocks.map(block=>{
-    const value = officeCompact(block.text);
-    offsets.push(offsets.at(-1)+value.length);
-    return value;
-  }).join("");
-  const boundaries = new Map(offsets.map((offset,index)=>[offset,index]));
-  const spans = [];
-  for (const [clause,rowId] of clauses) {
-    const needle = officeCompact(clause);
-    const matches = [];
-    for (let at=text.indexOf(needle);at!==-1;at=text.indexOf(needle,at+1)) {
-      if (boundaries.has(at) && boundaries.has(at+needle.length)) {
-        matches.push([boundaries.get(at),boundaries.get(at+needle.length)]);
-        if (matches.length===2) break;
+  const wholeBoundaries = new Map([[0,0]]);
+  const tableStarts = new Map();
+  let table = 0;
+  function addUnit(unit) {
+    const text = officeCompact(unit.text);
+    units.push(unit);
+    textParts.push(text);
+    offsets.push(offsets.at(-1)+text.length);
+  }
+  for (const [block,{kind,text,table_rows:rows}] of blocks.entries()) {
+    if (kind==="table") table++;
+    if (kind==="table" && rows?.length) {
+      const tableStart = offsets.at(-1);
+      const rowBoundaries = new Map([[tableStart,units.length]]);
+      let firstRow = 0;
+      for (let endRow=1;endRow<=rows.length;endRow++) {
+        if (rows[endRow]?.continues_merge) continue;
+        const start = offsets.at(-1);
+        addUnit({block,table,firstRow:firstRow+1,lastRow:endRow,
+          text:rows.slice(firstRow,endRow).map(row=>row.text).join("\n")});
+        const end = offsets.at(-1);
+        if (end>start) tableStarts.set(start,rowBoundaries);
+        // Keep leading blank rows with the first group and other blank rows with their predecessor.
+        if (end>tableStart) rowBoundaries.set(end,units.length);
+        firstRow = endRow;
+      }
+    } else {
+      addUnit({block,text});
+    }
+    wholeBoundaries.set(offsets.at(-1),units.length);
+  }
+  return {units,offsets,wholeBoundaries,tableStarts,text:textParts.join("")};
+}
+
+function findIntakeClause({text,wholeBoundaries,tableStarts},needle) {
+  const whole = [], rows = [], partial = [];
+  if (!needle) return {matches:whole,partial};
+  for (let at=text.indexOf(needle);at!==-1;at=text.indexOf(needle,at+1)) {
+    const end = at+needle.length;
+    if (wholeBoundaries.has(at) && wholeBoundaries.has(end)) {
+      whole.push([wholeBoundaries.get(at),wholeBoundaries.get(end)]);
+      if (whole.length===3) break;
+    } else {
+      const boundaries = tableStarts.get(at);
+      if (boundaries?.has(end)) {
+        if (rows.length<3) rows.push([boundaries.get(at),boundaries.get(end)]);
+      } else if (partial.length<3) {
+        partial.push([at,end]);
       }
     }
-    requirePackage(matches.length===1,
-      "标注集第 "+rowId.slice(4)+" 行的「条款原文」"+(matches.length?"在 Word 中有多处相同内容":"无法与 Word 中的完整段落对应")+"。请核对合同版本和切片："+clause.trim().slice(0,45));
-    spans.push({start:matches[0][0],end:matches[0][1],clause,rowId});
   }
-  spans.sort((a,b)=>a.start-b.start);
+  return {matches:whole.length ? whole : rows,partial};
+}
+
+function intakeWordLocation(units,start,end) {
+  const first = units[start], last = units[end-1];
+  if (first.table && first.table===last.table) {
+    const range = first.firstRow===last.lastRow ? first.firstRow : first.firstRow+"–"+last.lastRow;
+    return "Word 第 "+first.table+" 张表第 "+range+" 行";
+  }
+  const range = first.block===last.block ? first.block+1 : (first.block+1)+"–"+(last.block+1);
+  return "Word 正文第 "+range+" 个内容块";
+}
+
+const intakeRowsLabel = ids=>"标注集第 "+ids.map(id=>id.replace(/^row-/,"")).join("、")+" 行";
+
+function locateIntakeSections(contract,clauses,issues) {
+  const layout = intakeWordLayout(contract.blocks);
+  const {units,offsets} = layout;
+  const spans = [];
+  const describe = range=>intakeWordLocation(units,...range);
+  const appendIssue = (rowIds,message)=>issues.push("「"+contract.name+"」"+intakeRowsLabel(rowIds)+"："+message);
+  for (const [needle,{texts,rowIds}] of clauses) {
+    const {matches,partial} = findIntakeClause(layout,needle);
+    if (matches.length===1) {
+      spans.push({range:matches[0],texts,rowIds});
+      continue;
+    }
+    const preview = Array.from(texts.values().next().value.trim()).slice(0,45).join("").replace(/\s+/gu," ");
+    if (matches.length) {
+      appendIssue(rowIds,"「条款原文」有多处匹配（"+matches.map(describe).join("、")+"）。请核对原文「"+preview+"」。");
+    } else if (partial.length) {
+      const locations = new Set(partial.map(([at,end])=>intakeWordLocation(units,
+        offsets.findIndex(offset=>offset>at)-1,offsets.findIndex(offset=>offset>=end))));
+      appendIssue(rowIds,"「条款原文」见于 "+[...locations].join("、")+"。请核对完整段落、整表或单张表内的连续整行，并保留完整的纵向合并单元格。");
+    } else {
+      appendIssue(rowIds,"「条款原文」在 Word 中找不到相同文字。请核对合同版本和原文「"+preview+"」。");
+    }
+  }
+  spans.sort((a,b)=>a.range[0]-b.range[0] || b.range[1]-a.range[1]);
+  let previous;
+  for (const span of spans) {
+    if (previous && span.range[0]<previous.range[1]) {
+      appendIssue(span.rowIds,"条款切片（"+describe(span.range)+"）与"+intakeRowsLabel(previous.rowIds)+
+        "的切片（"+describe(previous.range)+"）重叠。请统一完整条款原文。");
+    }
+    if (!previous || span.range[1]>previous.range[1]) previous = span;
+  }
+  if (issues.length) return new Map();
+
   const ids = new Map();
   const sections = [];
-  function addSection(start,end,text) {
-    const heading = contract.blocks[start].text.trim().split("\n")[0].slice(0,90);
+  function addSection(start,end,sourceTexts=[]) {
+    const fromWord = units.slice(start,end).map(unit=>unit.text).join("\n");
+    if (!fromWord.trim()) return;
+    const heading = fromWord.trim().split("\n")[0].slice(0,90);
     const id = "S"+String(sections.length+1).padStart(3,"0");
-    sections.push({id,heading,text:text ?? contract.blocks.slice(start,end).map(block=>block.text).join("\n")});
-    return id;
+    const [text,...annotation_texts] = sourceTexts;
+    const section = {id,heading,text:text ?? fromWord};
+    if (annotation_texts.length) section.annotation_texts = annotation_texts;
+    sections.push(section);
+    for (const clause of sourceTexts) ids.set(clause,id);
   }
   let cursor = 0;
-  for (const {start,end,clause,rowId} of spans) {
-    requirePackage(start>=cursor,"标注集第 "+rowId.slice(4)+" 行的条款切片与其他行重叠。请统一这些行的完整条款原文。");
+  for (const {range:[start,end],texts} of spans) {
     if (start>cursor) addSection(cursor,start);
-    ids.set(clause,addSection(start,end,clause));
+    addSection(start,end,[...texts]);
     cursor = end;
   }
-  if (cursor<contract.blocks.length) addSection(cursor,contract.blocks.length);
+  if (cursor<units.length) addSection(cursor,units.length);
   contract.sections = sections;
   return ids;
+}
+
+function locateIntakeContracts(contracts,rows) {
+  const clauses = new Map(contracts.map(contract=>[contract.id,new Map()]));
+  for (const row of rows) {
+    if (row.scope!=="slice") continue;
+    const text = row.fields["条款原文"];
+    const key = officeCompact(text);
+    const selected = clauses.get(row.contract_id);
+    if (!selected.has(key)) selected.set(key,{texts:new Set(),rowIds:[]});
+    const {texts,rowIds} = selected.get(key);
+    texts.add(text);
+    rowIds.push(row.id);
+  }
+  const issues = [];
+  const sections = new Map(contracts.map(contract=>[contract.id,locateIntakeSections(contract,clauses.get(contract.id),issues)]));
+  requirePackage(!issues.length,"条款切片核对发现 "+issues.length+" 处问题。\n"+issues.join("\n"));
+  for (const contract of contracts) {
+    for (const block of contract.blocks) delete block.table_rows;
+  }
+  for (const row of rows) {
+    if (row.scope==="slice") row.section_id = sections.get(row.contract_id).get(row.fields["条款原文"]);
+  }
 }
 
 function alignIntakeVersions(left,right) {
@@ -438,7 +551,6 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
     const {value:blocks,sha256} = await ingest(file,"用于 AI 标注的合同 Word",readIntakeWord);
     contracts.set(key,{id:"C"+(contracts.size+1),name:null,filename:file.name,blocks,source_sha256:sha256});
   }
-  const clauses = new Map([...contracts.values()].map(contract=>[contract.id,new Map()]));
   const [fileKey,categoryKey,clauseKey,riskKey,stanceKey,relevantKey,triggerKey,levelKey,logicKey,,,,evidenceKey] = packageFieldNames;
   for (const row of rows) {
     const f = row.fields;
@@ -464,8 +576,6 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
     row.original_fields = {...f};
     if (f[clauseKey].trim()) {
       row.scope = "slice";
-      const selected = clauses.get(contract.id);
-      if (!selected.has(f[clauseKey])) selected.set(f[clauseKey],row.id);
     } else {
       requirePackage(f[clauseKey]==="" && !f[categoryKey] && f[relevantKey]==="否" &&
         (f[triggerKey]==="否" || !f[evidenceKey].trim()),
@@ -473,15 +583,11 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
       row.scope = "full_missing";
     }
   }
-  const sectionByContract = new Map();
   for (const contract of contracts.values()) {
     contract.name ||= contract.filename;
     delete contract.filename;
-    sectionByContract.set(contract.id,locateIntakeSections(contract,clauses.get(contract.id)));
   }
-  for (const row of rows) {
-    if (row.scope==="slice") row.section_id = sectionByContract.get(row.contract_id).get(row.fields[clauseKey]);
-  }
+  locateIntakeContracts([...contracts.values()],rows);
   const first = contracts.values().next().value;
   const title = first.name.replace(/\.docx$/i,"")+(contracts.size>1?" 等 "+contracts.size+" 份合同":"");
   const project = {

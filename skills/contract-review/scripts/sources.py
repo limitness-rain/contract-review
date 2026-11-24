@@ -447,21 +447,30 @@ def paragraph_text(paragraph):
     return "".join(parts)
 
 
-def table_text(table):
+def table_rows(table, numbering):
     rows = []
     for row in table.findall(W + "tr"):
         cells = []
+        continues_merge = False
         for cell in row.findall(W + "tc"):
-            cells.append("\u2028".join(doc_text(child) for child in blocks(cell)))
+            cells.append("\u2028".join(table_cell_text(child, numbering) for child in blocks(cell)))
+            merge = cell.find(W + "tcPr/" + W + "vMerge")
+            continues_merge |= merge is not None and (merge.get(W + "val") or "continue") == "continue"
             span = value(cell, "./" + W + "tcPr/" + W + "gridSpan")
             if span.isdecimal():
                 cells.extend([""] * min(max(int(span) - 1, 0), 100))
-        rows.append("\t".join(cells))
-    return "\n".join(rows)
+        rows.append({"text": "\t".join(cells), "continues_merge": continues_merge})
+    return rows
 
 
-def doc_text(node):
-    return paragraph_text(node) if tagname(node) == "p" else table_text(node)
+def table_cell_text(node, numbering):
+    if tagname(node) == "tbl":
+        return "\n".join(row["text"] for row in table_rows(node, numbering))
+    text = paragraph_text(node)
+    if not text.strip():
+        return text
+    prefix, _ = numbering.label(node.find(W + "pPr/" + W + "numPr"))
+    return prefix + text
 
 
 def blocks(container):
@@ -595,8 +604,9 @@ def docx_contract(path, contract_id=None, name=None):
     full_blocks, sections, sections_ended = [], [], False
     numbering = WordNumbering(numbering_xml)
     for node in blocks(body):
-        text = doc_text(node)
         is_table = tagname(node) == "tbl"
+        rows = table_rows(node, numbering) if is_table else None
+        text = "\n".join(row["text"] for row in rows) if is_table else paragraph_text(node)
         if not text.strip() and not is_table:
             continue
 
@@ -609,7 +619,10 @@ def docx_contract(path, contract_id=None, name=None):
             number_heading or HEADING.match(text)
             or bool(full_blocks) and (style in heading_styles or level == "0")
         )
-        full_blocks.append({"kind": "table" if is_table else "paragraph", "text": prefix + text})
+        block = {"kind": "table" if is_table else "paragraph", "text": prefix + text}
+        if is_table:
+            block["table_rows"] = rows
+        full_blocks.append(block)
         if sections_ended:
             continue
         if sections and not is_table and not is_heading and SIGNATURE.fullmatch(text):

@@ -42,7 +42,7 @@ body:has(.package-start) { min-height:100vh; background:radial-gradient(ellipse 
 .package-start-field { display:grid; gap:5px; }
 .package-start-field input { width:100%; padding:8px 11px; }
 .package-start-form > .primary { margin-top:2px; justify-self:stretch; }
-.package-start-status { color:#852d34; overflow-wrap:anywhere; }
+.package-start-status { color:#852d34; overflow-wrap:anywhere; white-space:pre-line; }
 .package-start-status:empty { display:none; }
 .package-card-summary { grid-template-columns:minmax(0,32%) minmax(0,1fr); font-size:13px; }
 .package-card-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; margin-left:auto; }
@@ -84,6 +84,7 @@ body:has(.package-start) { min-height:100vh; background:radial-gradient(ellipse 
 .package-review-panel label > span { font-size:13px; }
 .package-review-panel .package-review-confirm { width:100%; margin-top:8px; min-height:38px; font-size:14px; font-weight:650; }
 .package-clause-actions { margin-top:5px; }
+.package-draft-notice { margin:0; color:#78561c; }
 .package-version-option { display:flex; align-items:center; gap:8px; }
 .package-version-switch { display:flex; justify-content:flex-end; align-items:center; gap:8px; margin-bottom:8px; }
 .package-version-switch span { min-width:0; overflow-wrap:anywhere; margin-right:auto; color:var(--version-ink,var(--ink)); font-weight:650; }
@@ -315,11 +316,12 @@ function packageRequiresCardReview(row) {
   return type!=="" && type!=="unrelated";
 }
 function packageWorkbookSelection(project) {
-  if (project.stage!=="final") return {rows:project.rows,removed:0};
+  if (project.stage!=="final") return {rows:project.rows,removed:0,replaced:0};
   const paired = new Set(packagePairs(project).flatMap(pair=>pair.contracts));
-  const rows = project.rows.filter(row=>!(paired.has(row.contract_id) &&
+  const active = project.rows.filter(row=>!row.replaced_by);
+  const rows = active.filter(row=>!(paired.has(row.contract_id) &&
     row.lawyer?.reviewed===true && packageCurrentRemoval(row)));
-  return {rows,removed:project.rows.length-rows.length};
+  return {rows,removed:active.length-rows.length,replaced:project.rows.length-active.length};
 }
 
 const crcTable = Uint32Array.from({length:256},(_,index)=>{
@@ -456,6 +458,13 @@ function replayPackage(baseline,events) {
   for (const key of ["review_questions","lawyer_suggestions","paths","checks","risk_changes"]) {
     requirePackage(project[key]==null || Array.isArray(project[key]),"复核 JSON 的 "+key+" 应为数组。");
   }
+  for (const row of project.rows) {
+    if (!row.replaced_by) continue;
+    const replacement = rows.get(row.replaced_by);
+    requirePackage(packageCardType(row.fields)==="unrelated" && replacement?.added_by && !replacement.replaced_by &&
+      ["contract_id","rule_id","matter_id"].every(key=>(row[key] || "")===(replacement[key] || "")) &&
+      (!row.section_id || row.section_id===replacement.section_id),"新增卡片与原切片记录未能对应："+row.id);
+  }
   requirePackage([...(project.review_questions || []),...(project.lawyer_suggestions || [])].every(item=>item && typeof item.text==="string"),"问答或建议格式无效。");
   if (project.version_pairs!=null || project.version_pair) validatePackageVersionPair(baseline,project);
   delete project.shared_rows;
@@ -587,7 +596,7 @@ function workbookForProject(project) {
     requirePackage(typeof value==="string" && value.length<=32767 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/.test(value),"Excel 字段长度或字符超出支持范围。");
     return value.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll("\r","&#13;");
   }
-  const {rows,removed} = packageWorkbookSelection(project);
+  const {rows,removed,replaced} = packageWorkbookSelection(project);
   const lines = [project.fields,...rows.map(row=>project.fields.map(field=>row.fields[field]))];
   const data = lines.map((values,index)=>{
     const row = index+1;
@@ -599,7 +608,7 @@ function workbookForProject(project) {
   entries[name] = entries[name].replace(/<sheetData>.*?<\/sheetData>/s,()=>"<sheetData>"+data+"</sheetData>").replaceAll("A1:O1","A1:O"+lines.length);
   const blob = makeStoredZip(new Map(Object.entries(entries).map(([entry,value])=>[entry,utf8.encode(value)])),
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  return {blob,count:rows.length,removed};
+  return {blob,count:rows.length,removed,replaced};
 }
 
 "use strict";
@@ -758,10 +767,14 @@ function wordBodyBlocks(container,numberLabel,keepEmpty=false) {
   const result = [];
   for (const item of container.children) {
     const tag = item.localName;
-    if (tag==="p" || tag==="tbl") {
-      const body = tag==="p" ? wordParagraphText(item) : wordTableText(item,numberLabel);
-      const text = tag==="p" && body.trim() ? numberLabel(item)+body : body;
-      if (keepEmpty || text.trim()) result.push({kind:tag==="p"?"paragraph":"table",text});
+    if (tag==="p") {
+      const text = wordParagraphText(item);
+      if (text.trim()) result.push({kind:"paragraph",text:numberLabel(item)+text});
+      else if (keepEmpty) result.push({kind:"paragraph",text});
+    } else if (tag==="tbl") {
+      const table_rows = wordTableRows(item,numberLabel);
+      const text = table_rows.map(row=>row.text).join("\n");
+      if (keepEmpty || text.trim()) result.push({kind:"table",text,table_rows});
     } else if (["sdt","sdtContent","customXml","ins"].includes(tag)) {
       result.push(...wordBodyBlocks(item,numberLabel,keepEmpty));
     }
@@ -781,17 +794,20 @@ function wordParagraphText(element) {
   read(element);
   return parts.join("");
 }
-function wordTableText(table,numberLabel) {
+function wordTableRows(table,numberLabel) {
   return officeChildren(table,"tr").map(row=>{
     const values = [];
+    let continues_merge = false;
     for (const cell of officeChildren(row,"tc")) {
       values.push(wordBodyBlocks(cell,numberLabel,true).map(block=>block.text).join("\u2028"));
-      const span = officeChild(officeChild(cell,"tcPr"),"gridSpan");
-      const width = Number(span?.getAttributeNS(span.namespaceURI,"val"));
+      const props = officeChild(cell,"tcPr");
+      const merge = officeChild(props,"vMerge");
+      continues_merge ||= !!merge && (wordAttr(merge,"val") || "continue")==="continue";
+      const width = Number(wordValue(props,"gridSpan"));
       if (Number.isInteger(width) && width>1) values.push(...Array(Math.min(width-1,100)).fill(""));
     }
-    return values.join("\t");
-  }).join("\n");
+    return {text:values.join("\t"),continues_merge};
+  });
 }
 async function readIntakeWord(archive) {
   const document = await archive.xml("word/document.xml");
@@ -853,48 +869,154 @@ async function readIntakeWorkbook(archive) {
   return {rows,sheet:sheet.getAttribute("name"),columns:Object.fromEntries(packageFieldNames.map((field,index)=>[field,columns[index]]))};
 }
 
-// Match complete clauses at Word paragraph/table boundaries in document order.
-function locateIntakeSections(contract,clauses) {
+function intakeWordLayout(blocks) {
+  const units = [], textParts = [];
   const offsets = [0];
-  const text = contract.blocks.map(block=>{
-    const value = officeCompact(block.text);
-    offsets.push(offsets.at(-1)+value.length);
-    return value;
-  }).join("");
-  const boundaries = new Map(offsets.map((offset,index)=>[offset,index]));
-  const spans = [];
-  for (const [clause,rowId] of clauses) {
-    const needle = officeCompact(clause);
-    const matches = [];
-    for (let at=text.indexOf(needle);at!==-1;at=text.indexOf(needle,at+1)) {
-      if (boundaries.has(at) && boundaries.has(at+needle.length)) {
-        matches.push([boundaries.get(at),boundaries.get(at+needle.length)]);
-        if (matches.length===2) break;
+  const wholeBoundaries = new Map([[0,0]]);
+  const tableStarts = new Map();
+  let table = 0;
+  function addUnit(unit) {
+    const text = officeCompact(unit.text);
+    units.push(unit);
+    textParts.push(text);
+    offsets.push(offsets.at(-1)+text.length);
+  }
+  for (const [block,{kind,text,table_rows:rows}] of blocks.entries()) {
+    if (kind==="table") table++;
+    if (kind==="table" && rows?.length) {
+      const tableStart = offsets.at(-1);
+      const rowBoundaries = new Map([[tableStart,units.length]]);
+      let firstRow = 0;
+      for (let endRow=1;endRow<=rows.length;endRow++) {
+        if (rows[endRow]?.continues_merge) continue;
+        const start = offsets.at(-1);
+        addUnit({block,table,firstRow:firstRow+1,lastRow:endRow,
+          text:rows.slice(firstRow,endRow).map(row=>row.text).join("\n")});
+        const end = offsets.at(-1);
+        if (end>start) tableStarts.set(start,rowBoundaries);
+        // Keep leading blank rows with the first group and other blank rows with their predecessor.
+        if (end>tableStart) rowBoundaries.set(end,units.length);
+        firstRow = endRow;
+      }
+    } else {
+      addUnit({block,text});
+    }
+    wholeBoundaries.set(offsets.at(-1),units.length);
+  }
+  return {units,offsets,wholeBoundaries,tableStarts,text:textParts.join("")};
+}
+
+function findIntakeClause({text,wholeBoundaries,tableStarts},needle) {
+  const whole = [], rows = [], partial = [];
+  if (!needle) return {matches:whole,partial};
+  for (let at=text.indexOf(needle);at!==-1;at=text.indexOf(needle,at+1)) {
+    const end = at+needle.length;
+    if (wholeBoundaries.has(at) && wholeBoundaries.has(end)) {
+      whole.push([wholeBoundaries.get(at),wholeBoundaries.get(end)]);
+      if (whole.length===3) break;
+    } else {
+      const boundaries = tableStarts.get(at);
+      if (boundaries?.has(end)) {
+        if (rows.length<3) rows.push([boundaries.get(at),boundaries.get(end)]);
+      } else if (partial.length<3) {
+        partial.push([at,end]);
       }
     }
-    requirePackage(matches.length===1,
-      "标注集第 "+rowId.slice(4)+" 行的「条款原文」"+(matches.length?"在 Word 中有多处相同内容":"无法与 Word 中的完整段落对应")+"。请核对合同版本和切片："+clause.trim().slice(0,45));
-    spans.push({start:matches[0][0],end:matches[0][1],clause,rowId});
   }
-  spans.sort((a,b)=>a.start-b.start);
+  return {matches:whole.length ? whole : rows,partial};
+}
+
+function intakeWordLocation(units,start,end) {
+  const first = units[start], last = units[end-1];
+  if (first.table && first.table===last.table) {
+    const range = first.firstRow===last.lastRow ? first.firstRow : first.firstRow+"–"+last.lastRow;
+    return "Word 第 "+first.table+" 张表第 "+range+" 行";
+  }
+  const range = first.block===last.block ? first.block+1 : (first.block+1)+"–"+(last.block+1);
+  return "Word 正文第 "+range+" 个内容块";
+}
+
+const intakeRowsLabel = ids=>"标注集第 "+ids.map(id=>id.replace(/^row-/,"")).join("、")+" 行";
+
+function locateIntakeSections(contract,clauses,issues) {
+  const layout = intakeWordLayout(contract.blocks);
+  const {units,offsets} = layout;
+  const spans = [];
+  const describe = range=>intakeWordLocation(units,...range);
+  const appendIssue = (rowIds,message)=>issues.push("「"+contract.name+"」"+intakeRowsLabel(rowIds)+"："+message);
+  for (const [needle,{texts,rowIds}] of clauses) {
+    const {matches,partial} = findIntakeClause(layout,needle);
+    if (matches.length===1) {
+      spans.push({range:matches[0],texts,rowIds});
+      continue;
+    }
+    const preview = Array.from(texts.values().next().value.trim()).slice(0,45).join("").replace(/\s+/gu," ");
+    if (matches.length) {
+      appendIssue(rowIds,"「条款原文」有多处匹配（"+matches.map(describe).join("、")+"）。请核对原文「"+preview+"」。");
+    } else if (partial.length) {
+      const locations = new Set(partial.map(([at,end])=>intakeWordLocation(units,
+        offsets.findIndex(offset=>offset>at)-1,offsets.findIndex(offset=>offset>=end))));
+      appendIssue(rowIds,"「条款原文」见于 "+[...locations].join("、")+"。请核对完整段落、整表或单张表内的连续整行，并保留完整的纵向合并单元格。");
+    } else {
+      appendIssue(rowIds,"「条款原文」在 Word 中找不到相同文字。请核对合同版本和原文「"+preview+"」。");
+    }
+  }
+  spans.sort((a,b)=>a.range[0]-b.range[0] || b.range[1]-a.range[1]);
+  let previous;
+  for (const span of spans) {
+    if (previous && span.range[0]<previous.range[1]) {
+      appendIssue(span.rowIds,"条款切片（"+describe(span.range)+"）与"+intakeRowsLabel(previous.rowIds)+
+        "的切片（"+describe(previous.range)+"）重叠。请统一完整条款原文。");
+    }
+    if (!previous || span.range[1]>previous.range[1]) previous = span;
+  }
+  if (issues.length) return new Map();
+
   const ids = new Map();
   const sections = [];
-  function addSection(start,end,text) {
-    const heading = contract.blocks[start].text.trim().split("\n")[0].slice(0,90);
+  function addSection(start,end,sourceTexts=[]) {
+    const fromWord = units.slice(start,end).map(unit=>unit.text).join("\n");
+    if (!fromWord.trim()) return;
+    const heading = fromWord.trim().split("\n")[0].slice(0,90);
     const id = "S"+String(sections.length+1).padStart(3,"0");
-    sections.push({id,heading,text:text ?? contract.blocks.slice(start,end).map(block=>block.text).join("\n")});
-    return id;
+    const [text,...annotation_texts] = sourceTexts;
+    const section = {id,heading,text:text ?? fromWord};
+    if (annotation_texts.length) section.annotation_texts = annotation_texts;
+    sections.push(section);
+    for (const clause of sourceTexts) ids.set(clause,id);
   }
   let cursor = 0;
-  for (const {start,end,clause,rowId} of spans) {
-    requirePackage(start>=cursor,"标注集第 "+rowId.slice(4)+" 行的条款切片与其他行重叠。请统一这些行的完整条款原文。");
+  for (const {range:[start,end],texts} of spans) {
     if (start>cursor) addSection(cursor,start);
-    ids.set(clause,addSection(start,end,clause));
+    addSection(start,end,[...texts]);
     cursor = end;
   }
-  if (cursor<contract.blocks.length) addSection(cursor,contract.blocks.length);
+  if (cursor<units.length) addSection(cursor,units.length);
   contract.sections = sections;
   return ids;
+}
+
+function locateIntakeContracts(contracts,rows) {
+  const clauses = new Map(contracts.map(contract=>[contract.id,new Map()]));
+  for (const row of rows) {
+    if (row.scope!=="slice") continue;
+    const text = row.fields["条款原文"];
+    const key = officeCompact(text);
+    const selected = clauses.get(row.contract_id);
+    if (!selected.has(key)) selected.set(key,{texts:new Set(),rowIds:[]});
+    const {texts,rowIds} = selected.get(key);
+    texts.add(text);
+    rowIds.push(row.id);
+  }
+  const issues = [];
+  const sections = new Map(contracts.map(contract=>[contract.id,locateIntakeSections(contract,clauses.get(contract.id),issues)]));
+  requirePackage(!issues.length,"条款切片核对发现 "+issues.length+" 处问题。\n"+issues.join("\n"));
+  for (const contract of contracts) {
+    for (const block of contract.blocks) delete block.table_rows;
+  }
+  for (const row of rows) {
+    if (row.scope==="slice") row.section_id = sections.get(row.contract_id).get(row.fields["条款原文"]);
+  }
 }
 
 function alignIntakeVersions(left,right) {
@@ -1042,7 +1164,6 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
     const {value:blocks,sha256} = await ingest(file,"用于 AI 标注的合同 Word",readIntakeWord);
     contracts.set(key,{id:"C"+(contracts.size+1),name:null,filename:file.name,blocks,source_sha256:sha256});
   }
-  const clauses = new Map([...contracts.values()].map(contract=>[contract.id,new Map()]));
   const [fileKey,categoryKey,clauseKey,riskKey,stanceKey,relevantKey,triggerKey,levelKey,logicKey,,,,evidenceKey] = packageFieldNames;
   for (const row of rows) {
     const f = row.fields;
@@ -1068,8 +1189,6 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
     row.original_fields = {...f};
     if (f[clauseKey].trim()) {
       row.scope = "slice";
-      const selected = clauses.get(contract.id);
-      if (!selected.has(f[clauseKey])) selected.set(f[clauseKey],row.id);
     } else {
       requirePackage(f[clauseKey]==="" && !f[categoryKey] && f[relevantKey]==="否" &&
         (f[triggerKey]==="否" || !f[evidenceKey].trim()),
@@ -1077,15 +1196,11 @@ async function generateInitialPackage(wordFiles,excelFiles,confirmWarnings) {
       row.scope = "full_missing";
     }
   }
-  const sectionByContract = new Map();
   for (const contract of contracts.values()) {
     contract.name ||= contract.filename;
     delete contract.filename;
-    sectionByContract.set(contract.id,locateIntakeSections(contract,clauses.get(contract.id)));
   }
-  for (const row of rows) {
-    if (row.scope==="slice") row.section_id = sectionByContract.get(row.contract_id).get(row.fields[clauseKey]);
-  }
+  locateIntakeContracts([...contracts.values()],rows);
   const first = contracts.values().next().value;
   const title = first.name.replace(/\.docx$/i,"")+(contracts.size>1?" 等 "+contracts.size+" 份合同":"");
   const project = {
@@ -1207,7 +1322,7 @@ function packageFileControl() {
     const file = input.files[0];
     input.value = "";
     if (!file || packageBusy) return;
-    if ((dirty || openEditor) && !window.confirm("当前有尚未导出的修改或打开的编辑表单。继续导入其他数据包？")) return;
+    if ((dirty || openEditor || packageHasDetailDraft()) && !window.confirm("当前有尚未导出或尚未确认的修改。继续导入其他数据包？")) return;
     packageBusy = root.inert = true;
     setNotice("正在校验数据包…");
     try {
@@ -1465,8 +1580,12 @@ function packageRecordVersion(row) {
     scope:row.scope,section_id:row.section_id,matter_id:row.matter_id
   });
 }
+function packageHasReplacementBinding(row) {
+  return !!row.added_by && (packageDetailPages.get(model.stage)?.newCard?.row.id===row.id ||
+    model.rows.some(source=>source.replaced_by===row.id));
+}
 function fixedPackageBindingFields(row) {
-  if (packageSharedRows.has(row.id)) return packageBoundFields;
+  if (packageSharedRows.has(row.id) || packageHasReplacementBinding(row)) return packageBoundFields;
   return packagePairByContract.has(row.contract_id) ? packageSourceFields : [];
 }
 function invalidatePackageReview(row,before) {
@@ -1726,6 +1845,7 @@ function appendPackageLog(dialog) {
 async function savePackage(nextStage) {
   if (packageBusy || !packageSession?.actor) return;
   if (openEditor) return setNotice("请先应用或取消当前编辑。");
+  if (packageHasDetailDraft()) return setNotice("请先确认当前卡片，或退出详情放弃未确认的改动，再导出 ZIP。");
   const handoff = nextStage!==model.stage;
   const action = nextStage==="final" ? "保存律师终版" : handoff ? "提交给律师" : "导出当前进度";
   if (handoff && nextStage==="lawyer") {
@@ -1791,10 +1911,17 @@ async function savePackage(nextStage) {
 }
 const normalizeClauseText = value=>value.replace(/\r\n?/g,"\n");
 
+function sectionAnnotationTexts(section) {
+  const text = normalizeClauseText(section.text);
+  const alternatives = Array.isArray(section.annotation_texts) ? section.annotation_texts : [];
+  return [text,...alternatives.filter(value=>typeof value==="string" && officeCompact(value)===officeCompact(text))
+    .map(normalizeClauseText)];
+}
+
 function clauseMismatchIssue(row,contract,sectionId) {
   const actual = normalizeClauseText(row.fields[keyClause]);
   const section = contract?.sections.find(item=>item.id===sectionId);
-  const exactElsewhere = contract?.sections.filter(item=>item.id!==sectionId && normalizeClauseText(item.text)===actual) || [];
+  const exactElsewhere = contract?.sections.filter(item=>item.id!==sectionId && sectionAnnotationTexts(item).includes(actual)) || [];
   let reason, instruction;
   if (!contract) {
     reason = "这条标注没有对应到数据包中的合同，系统无法核对条款原文。";
@@ -1849,23 +1976,29 @@ function locatePackageIssue(issue,dialog,{restore,field,editBinding,rowId=issue.
   if (restore) {
     if (model.stage!=="lawyer" || !row || fixedPackageBindingFields(row).includes(keyClause) ||
         !restore.canRestore || row.section_id!==restore.section.id) return;
-    const before = structuredClone(row);
-    row.fields[keyClause] = restore.section.text;
-    invalidatePackageReview(row,before);
-    reviewData(row,"lawyer").reviewed = false;
-    changed("恢复完整条款原文");
   }
   dialog.close();
   const contract = row?.contract_id ?? issue.contractId;
   const section = rowId===issue.rowId || !row ? issue.section?.id : row.section_id;
   resetRiskFilters(contract);
+  if (row && packageListType(row,"lawyer")==="unrelated") {
+    const scope = byId("scope");
+    scope.value = scope.dataset.past = "unrelated";
+  }
   revealPackageRowVersion(row || {contract_id:contract},section);
   render();
   if (row) {
     openPackageDetail(row,"lawyer");
     focusPackageRow(row.id,false,"lawyer");
+    const detail = packageDetailPages.get("lawyer");
+    if (restore && detail?.rowId===row.id) {
+      detail.draft ||= structuredClone(row);
+      detail.draft.fields[keyClause] = restore.section.text;
+      updatePackageDetail(detail,row,true);
+    }
     if ((field || editBinding) && model.stage==="lawyer") {
-      const page = packageDetailPages.get("lawyer").element;
+      const page = detail?.element;
+      if (!page) return;
       const edit = page.querySelector(".package-field-toggle");
       if (edit) {
         edit.click();
@@ -1885,7 +2018,7 @@ function locatePackageIssue(issue,dialog,{restore,field,editBinding,rowId=issue.
       activatePackageSection(slot);
     }
   }
-  if (restore) setNotice("已恢复完整条款原文。请核对关键证据仍来自该条款，重新确认本条后再导出终版。");
+  if (restore) setNotice("完整条款原文已暂存于详情。请核对关键证据并点击「确认复核」。");
 }
 
 function showPackageFailures(issues) {
@@ -1959,10 +2092,11 @@ async function exportPackageWorkbook() {
   const filename = await choosePackageFilename(packageExportName(contractName,reviewer,"只读验收","归档"),".xlsx");
   if (!filename) return;
   try {
-    const {blob,count,removed} = workbookForProject(model);
+    const {blob,count,removed,replaced} = workbookForProject(model);
     downloadPackageFile(blob,filename);
     setNotice("已发起下载 "+filename+"，共 "+count+" 条 × 15 列。"+
-      (removed ? "已排除 "+removed+" 条确认删卡记录。" : ""));
+      (removed ? "已排除 "+removed+" 条确认删卡记录。" : "")+
+      (replaced ? "已排除 "+replaced+" 条有对应新增卡片的旧不相关记录。" : ""));
   } catch (error) {
     setNotice("Excel 导出失败。"+error.message);
   }
@@ -2232,7 +2366,7 @@ function handoffMark(row,view,role) {
   return null;
 }
 function roleRemoval(row,view,role) {
-  if (role==="lawyer" && model.stage==="lawyer") {
+  if (model.stage===role) {
     return packageCurrentRemoval(row) ? latestPackageJudgment(row) : null;
   }
   if (get(view,riskField)!=="否") return null;
@@ -2284,15 +2418,6 @@ function matchesPackageRiskFilter(row,scope) {
   const type = packageCardType(row.fields);
   return scope==="review" ? type!=="unrelated" : type===scope;
 }
-function showFinalPackageChange(row) {
-  return model.stage==="final" && byId("change-status").value==="changed" && packageSession.changedRows.has(row.id);
-}
-function packageCardHidden(row,role,view={...row,...roleProjection(row,role)}) {
-  if (showFinalPackageChange(row)) return false;
-  const removal = roleRemoval(row,view,role);
-  if (removal && (role==="student" ? model.stage!=="student" : model.stage==="lawyer")) return false;
-  return packageCurrentRemoval(row) || !!removal;
-}
 function packageJudgmentBadge(view,prefix="") {
   const type = packageCardType(view.fields);
   const tone = type==="related-hit" || type==="no-clause" ? "risk" :
@@ -2300,6 +2425,7 @@ function packageJudgmentBadge(view,prefix="") {
   return node("span",prefix+(packageCardLabels.get(type) || "判断待核对"),"badge "+tone);
 }
 function packageReviewStatus(row,role) {
+  if (packageListType(row,role)==="unrelated") return node("span","无需复核","badge");
   const missingLegacyConfirmation = model.stage==="final" && model.review_related!==true && requiresUntriggeredReview(row) && !requiresRiskReview(row);
   const status = node("span",row[role]?.reviewed ? "已复核" : missingLegacyConfirmation ? "历史未确认" :
     requiresReview(row) ? "待复核" : "可复核","badge");
@@ -2313,7 +2439,10 @@ function showLawyerColumn() {
 }
 function canComparePackageRole(row,role,lawyerVisible=showLawyerColumn()) {
   return (role==="student" ? lawyerVisible : row.lawyer_review_only!==true) &&
-    !packageCardHidden(row,oppositePackageRole(role));
+    !row.replaced_by && (packageListType(row,oppositePackageRole(role))!=="unrelated" || byId("scope").value==="unrelated");
+}
+function packageListType(row,role,view={...row,...roleProjection(row,role)}) {
+  return packageCardType(roleRemoval(row,view,role)?.before ?? view.fields);
 }
 function shownPackageRows(role) {
   const scope = byId("scope").value, status = byId("review-status").value;
@@ -2327,7 +2456,7 @@ function shownPackageRows(role) {
     const view = {...row,...roleProjection(row,role)};
     const pending = role===model.stage && get(row,riskField)==="是" && !row[role]?.reviewed && get(view,riskField)!=="是";
     if (pending && !get(view,"风险名称")) Object.assign(view,packageRecordVersion(row));
-    if (packageCardHidden(row,role,view)) return [];
+    if (row.replaced_by) return [];
     const section = packageSlot(view);
     if (section===undefined) return [];
     const removal = roleRemoval(row,view,role);
@@ -2420,7 +2549,8 @@ function closePackageDetail(role) {
   (cards.get(page.rowId)?.querySelector(".package-edit-button") || list).focus({preventScroll:true});
   return true;
 }
-function openPackageDetail(row,role) {
+function openPackageDetail(row,role,newCard) {
+  if (!newCard && (row.replaced_by || (packageListType(row,role)==="unrelated" && byId("scope").value!=="unrelated"))) return;
   const current = packageDetailPages.get(role);
   if (current?.rowId===row.id) {
     current.element.querySelector(".package-detail-nav button:not(:disabled)")?.focus({preventScroll:true});
@@ -2431,7 +2561,7 @@ function openPackageDetail(row,role) {
   }
   const list = byId(packageSide[role]);
   const page = {
-    rowId:row.id, role, listScroll:current?.listScroll ?? list.scrollTop,
+    rowId:row.id, role, newCard, listScroll:current?.listScroll ?? list.scrollTop,
     element:node("div",null,"scroller package-detail-page")
   };
   page.element.dataset.row = row.id;
@@ -2449,8 +2579,10 @@ function openPackageCounterpart(row,role) {
   focusPackageRow(row.id,false,role);
 }
 function canRemovePackageRow(row) {
-  return get(row,riskField)==="是" || (get(row,riskField)==="否" &&
-    (requiresUntriggeredReview(row) || (packageIsFullMissing(row) && requiresRiskReview(row))));
+  return ["related-hit","related-clear"].includes(packageCardType(row.fields));
+}
+function packageHasDetailDraft() {
+  return [...packageDetailPages.values()].some(page=>page.draft || page.newCard);
 }
 function packageRowRemoved(row) {
   const latest = latestPackageJudgment(row);
@@ -2461,49 +2593,127 @@ function packageRowRemoved(row) {
         get(row,keyRelevant)==="否")) return false;
   return wasRisk(row);
 }
-function updatePackageJudgment(row,action,evidence="") {
-  if (openEditor) return setNotice("请先应用或取消当前字段修改。");
-  const triggered = action==="triggered";
-  const label = packageJudgmentLabels[action];
-  for (const part of sameJudgment(row)) {
-    const before = structuredClone(part);
-    remember(part,label,"");
-    Object.assign(part.fields,{
-      [keyRelevant]:packageIsFullMissing(part) ? "否" : "是",
-      [riskField]:triggered?"是":"否",
-      [keyEvidence]:action==="clear" && get(part,keyRelevant)==="是" ? get(part,keyEvidence) : evidence
-    });
-    if (!triggered) Object.assign(part.fields,{"风险说明":"","修订建议":""});
-    invalidatePackageReview(part,before);
-    reviewData(part,model.stage).reviewed = false;
-  }
-  changed(label);
-  render(true);
-  setNotice("已"+label+"，请确认本条复核。");
+function stagePackageJudgment(page,row,triggered) {
+  const current = page.draft || row;
+  const missing = packageIsFullMissing(current);
+  const draft = structuredClone(current);
+  draft.fields[riskField] = triggered ? "是" : "否";
+  draft.fields[keyEvidence] = "";
+  for (const field of packageCardBlankFields(packageCardType(draft.fields))) draft.fields[field] = "";
+  if (triggered) Object.assign(draft.fields,{"风险说明":"","修订建议":""});
+  page.draft = draft;
+  page.judgment = {action:packageJudgmentLabels[triggered ? "triggered" : missing ? "missingClear" : "clear"]};
+  updatePackageDetail(page,row,true);
 }
-function markPackageTriggered(row) {
-  if (openEditor) return setNotice("请先应用或取消当前字段修改。");
-  if (packageIsFullMissing(row)) return updatePackageJudgment(row,"triggered");
-  const dialog = dialogBox("标记为触发");
-  const evidence = node("textarea");
-  evidence.value = get(row,keyEvidence);
-  evidence.rows = 3;
-  const message = node("p","","small");
-  dialog.append(labelled("风险判断关键证据（必填）",evidence),message,button("确认标记为触发",()=>{
-    const text = evidence.value.trim();
-    const excerpts = text.split(/\n\s*\n/).filter(part=>part.trim());
-    const compact = value=>value.replace(/[\r\n\t \u3000\u00a0]+/g,"");
-    const clause = compact(get(row,keyClause));
-    if (!compact(text) || (!clause.includes(compact(text)) && excerpts.some(part=>!clause.includes(compact(part))))) {
-      message.textContent = "请填写能在本条款原文中定位的关键证据。";
-      return evidence.focus();
+
+function stagePackageRemoval(page,row) {
+  const dialog = dialogBox("删除风险卡");
+  const reason = node("textarea");
+  dialog.append(node("p","返回详情后，点击「确认复核」才会保存删除。"),labelled("删除原因（必填）",reason),
+    button("暂记删除",()=>{
+      const text = reason.value.trim();
+      if (!text) {
+        reason.setCustomValidity("请填写删除原因。");
+        return reason.reportValidity();
+      }
+      page.draft ||= structuredClone(row);
+      page.judgment = {action:"remove",reason:text};
+      dialog.close();
+      updatePackageDetail(page,row,true);
+    },"danger"));
+  reason.oninput = ()=>reason.setCustomValidity("");
+  reason.focus();
+}
+
+function stagePackageRestore(page,row) {
+  page.draft ||= structuredClone(row);
+  page.draft.fields = {...lastRiskRemoval(row).before};
+  page.judgment = {action:"restore",reason:"恢复删除前的标注"};
+  updatePackageDetail(page,row,true);
+}
+
+function addPackageCard(section,sourceId=contractId,alternate,evidenceText="") {
+  if (openEditor) return setNotice("请先应用或取消当前编辑。");
+  if (!contractById.has(sourceId)) return setNotice("请先选择实际合同。");
+  const slice = !!section;
+  const dialog = dialogBox(slice ? "新增风险卡" : "新增全文缺失风险");
+  const ruleSelect = choose("add-rule",[]);
+  const judgment = choose("add-judgment",[["是","相关，触发风险"],["否","相关，未触发风险"]]);
+  let selectedSection = section;
+  function refreshRules() {
+    const allowed = model.applicability?.[sourceId];
+    ruleSelect.replaceChildren();
+    option(ruleSelect,"","请选择规则与立场");
+    ruleSelect.disabled = !sourceId;
+    if (!sourceId) return;
+    for (const rule of rulesById.values()) {
+      if (!Array.isArray(allowed) || allowed.includes(rule.id)) option(ruleSelect,rule.id,rule.stance+" · "+rule.name);
     }
+  }
+  const pair = activePackagePair();
+  if (pair && (!slice || alternate)) {
+    const versions = alternate ? new Map([[sourceId,section],[alternate.source,alternate.section]]) : null;
+    const version = choose("add-contract-version",[["","请选择合同版本"],...pair.contracts.map(id=>[id,contractById.get(id).name])]);
+    sourceId = "";
+    version.onchange = ()=>{
+      sourceId = version.value;
+      if (versions) selectedSection = versions.get(sourceId);
+      refreshRules();
+    };
+    dialog.append(labelled("合同版本",version));
+  }
+  refreshRules();
+  dialog.append(labelled("正式规则与立场",ruleSelect));
+  if (slice) dialog.append(node("p",section.heading,"small"),labelled("卡片类型",judgment));
+  const message = node("p","","small");
+  message.setAttribute("role","status");
+  dialog.append(message,button("打开新增卡片详情",()=>{
+    const contract = contractById.get(sourceId), rule = rulesById.get(ruleSelect.value);
+    if (!contract || !rule) {
+      message.textContent = "请选择合同版本及正式规则。";
+      return;
+    }
+    const sections = currentSections(sourceId);
+    const candidates = model.rows.filter(row=>!row.replaced_by && row.contract_id===sourceId && row.rule_id===rule.id &&
+      (slice ? !packageIsFullMissing(row) && resolveSection(row,sections)===selectedSection.id : packageIsFullMissing(row)));
+    const existing = candidates.find(row=>packageCurrentRemoval(row) || packageCardType(row.fields)!=="unrelated");
+    if (existing) {
+      dialog.close();
+      resetRiskFilters(contractId);
+      revealPackageRowVersion(existing);
+      render();
+      openPackageDetail(existing,model.stage);
+      focusPackageRow(existing.id,false,model.stage);
+      setNotice("该合同、规则及位置已有卡片，已打开供复核或恢复。");
+      return;
+    }
+    if (new Set(candidates.map(row=>row.matter_id || "")).size>1) {
+      message.textContent = "该规则在这里有多个独立事项，请先核对本次新增对应的事项。";
+      return;
+    }
+    const role = model.stage;
+    const fields = Object.fromEntries(model.fields.map(field=>[field,""]));
+    const category = slice && model.rows.find(row=>row.contract_id===sourceId &&
+      row.section_id===selectedSection.id && get(row,"条款类型").trim());
+    Object.assign(fields,{"合同附件名称":contract.name,"风险名称":rule.name,"立场":rule.stance,
+      "风险等级":rule.level,"审查逻辑":rule.logic,"条款类型":category ? get(category,"条款类型") : "",
+      [keyClause]:selectedSection?.text || "",[keyRelevant]:slice ? "是" : "否",
+      [riskField]:slice ? judgment.value : "是",[keyEvidence]:slice ? evidenceText : ""});
+    const row = {id:"manual-"+crypto.randomUUID(),contract_id:sourceId,rule_id:rule.id,fields,original_fields:{},
+                 scope:slice ? "slice" : "full_missing",added_by:role};
+    if (slice) row.section_id = selectedSection.id;
+    if (candidates[0]?.matter_id) row.matter_id = candidates[0].matter_id;
+    if (role==="lawyer") row.lawyer_review_only = true;
     dialog.close();
-    updatePackageJudgment(row,"triggered",text);
+    if (packageDetailPages.has(role)) closePackageDetail(role);
+    resetRiskFilters(contractId);
+    revealPackageRowVersion(row);
+    render();
+    openPackageDetail(row,role,{row,replaces:candidates});
   },"primary"));
-  evidence.focus();
 }
 function confirmAllPackageAnnotations() {
+  if (packageHasDetailDraft()) return setNotice("请先确认当前卡片，或退出详情放弃未确认的改动。");
   const pending = packageReviewRows().filter(row=>!isReviewed(row));
   if (!pending.length) return setNotice("本包所有标注已复核。");
   for (const row of pending) reviewData(row,model.stage).reviewed = true;
@@ -2521,72 +2731,160 @@ function latestPackageFieldEdit(row) {
     if (!change.before || !samePackageValue(change.before.review_history,change.after.review_history)) break;
     const after = packageRecordVersion(change.after);
     if (samePackageValue(packageRecordVersion(change.before),after)) continue;
-    if (event.action==="编辑标注字段" && samePackageValue(version,after)) return event;
+    if (["编辑标注字段","编辑标注字段并确认"].includes(event.action) && samePackageValue(version,after)) return event;
     break;
   }
 }
-function undoPackageFieldEdit(row) {
-  if (openEditor) return setNotice("请先应用或取消当前字段修改。");
+function undoPackageFieldEdit(page,row) {
   const edit = latestPackageFieldEdit(row);
   if (!edit) return;
-  const peer = packageSharedRows.get(row.id);
-  for (const {id,before} of edit.rows) {
-    if (id!==row.id && id!==peer) continue;
-    const current = rowById.get(id);
-    const applied = structuredClone(current);
-    for (const [key,value] of Object.entries(packageRecordVersion(before))) {
-      if (value===undefined) delete current[key];
-      else current[key] = value;
-    }
-    invalidatePackageReview(current,applied);
-    for (const key of ["review_required","lawyer_review_only"]) {
-      if (before[key]===undefined) delete current[key];
-      else current[key] = before[key];
-    }
-    if (requiresReview(current)) reviewData(current,model.stage).reviewed = false;
-  }
-  changed("撤回已应用的字段修改");
-  render(true);
-  const detail = packageDetailPages.get(model.stage)?.element;
-  (detail?.querySelector(".package-field-toggle") || detail?.querySelector(".package-detail-back"))?.focus({preventScroll:true});
-  setNotice("已恢复上次应用前的字段。"+(requiresReview(row) ? "请重新确认这张风险卡。" : ""));
+  const before = edit.rows.find(item=>item.id===row.id).before;
+  page.draft = {...structuredClone(row),...packageRecordVersion(before)};
+  updatePackageDetail(page,row,true);
 }
-function packageReviewPanel(row,role) {
-  const review = row[role] || {reviewed:false,note:""};
+function packageDraftIssue(draft,requireRiskFields,checkEvidence) {
+  const type = packageCardType(draft.fields);
+  if (checkEvidence && (type==="related-hit" || type==="related-clear")) {
+    const compact = value=>value.replace(/\s/g,"");
+    const clause = compact(get(draft,keyClause));
+    const evidence = get(draft,keyEvidence).trim();
+    const parts = evidence.split(/\n\s*\n/).map(compact).filter(Boolean);
+    if ((!parts.length && type==="related-hit") ||
+        (parts.length && !clause.includes(compact(evidence)) && parts.some(part=>!clause.includes(part)))) {
+      return "请填写能在本条款原文中定位的关键证据。";
+    }
+  }
+  if (requireRiskFields && (!get(draft,"风险说明").trim() || !get(draft,"修订建议").trim())) {
+    return "请填写风险说明和修订建议。";
+  }
+  return "";
+}
+
+function confirmPackageDetail(page,row) {
+  const {role,draft,judgment,newCard} = page;
+  const pending = draft || row;
+  const action = judgment?.action;
+  if (!draft && !newCard) {
+    const review = reviewData(row,role);
+    review.reviewed = !review.reviewed;
+    changed(packageCurrentRemoval(row) ? "确认删除结果" : "复核确认");
+  } else {
+    const removing = action==="remove";
+    const restoring = action==="restore";
+    const newTrigger = (newCard || action===packageJudgmentLabels.triggered) && get(pending,riskField)==="是";
+    if (!removing) {
+      const checkEvidence = !!(newCard || action || get(pending,keyEvidence)!==get(row,keyEvidence) ||
+        get(pending,keyClause)!==get(row,keyClause));
+      const issue = packageDraftIssue(pending,newTrigger,checkEvidence);
+      if (issue) return issue;
+      if (newCard && !packageIsFullMissing(pending) && !get(pending,"条款类型").trim()) return "请填写条款类型。";
+    }
+    if (newCard) {
+      for (const prior of newCard.replaces) prior.replaced_by = row.id;
+      model.rows.push(row);
+      indexRows();
+    }
+    const oldType = packageCardType(row.fields);
+    const targets = action && !newCard ? sameJudgment(row).filter(part=>part===row || (!part.replaced_by &&
+      (restoring ? packageCurrentRemoval(part) : !packageCurrentRemoval(part) && packageCardType(part.fields)===oldType))) : [row];
+    for (const part of targets) {
+      const before = structuredClone(part);
+      if (newCard) remember(part,"add","新增风险卡");
+      else if (action && (removing || restoring || oldType!==packageCardType(pending.fields))) remember(part,action,judgment.reason || "");
+      if (part===row) {
+        for (const [key,value] of Object.entries(packageRecordVersion(pending))) {
+          if (value===undefined) delete row[key];
+          else row[key] = value;
+        }
+      } else if (restoring) {
+        // The latest history entry records the restore; use the previous removal.
+        Object.assign(part.fields,lastRiskRemoval(part).before);
+      } else if (!removing) {
+        for (const field of [riskField,keyEvidence,"风险说明","修订建议"]) part.fields[field] = pending.fields[field];
+      }
+      if (removing) {
+        Object.assign(part.fields,{[keyRelevant]:"否",[riskField]:"否"});
+        for (const field of packageCardBlankFields("unrelated")) part.fields[field] = "";
+      }
+      if (!newCard) invalidatePackageReview(part,before);
+      const review = reviewData(part,role);
+      if (part===row) review.note = pending[role]?.note || "";
+      review.reviewed = true;
+      part[role+"_view"] = packageRecordVersion(part);
+    }
+    delete page.draft;
+    delete page.judgment;
+    delete page.newCard;
+    changed(newCard ? "新增风险卡并确认" : removing ? "删除风险卡并确认" : restoring ? "恢复风险卡并确认" :
+      action ? action+"并确认" : "编辑标注字段并确认");
+  }
+  render(true);
+  setNotice(row[role]?.reviewed ? "已保存本条复核。" : "已撤销本条复核确认。");
+  return "";
+}
+
+function packageReviewPanel(page,row) {
+  const {role} = page;
+  const pending = page.draft || row;
+  const review = pending[role] || {reviewed:false,note:""};
   const panel = node("div",null,"review package-review-panel");
+  panel.append(node("strong",roleTitle[role]+"复核"));
   const note = node("textarea");
   note.rows = 2;
   note.value = review.note || "";
   note.setAttribute("aria-label",roleTitle[role]+"复核意见");
-  note.oninput = ()=>{
-    row[role] = review;
-    review.note = note.value;
-    dirty = true;
-  };
-  note.onchange = ()=>changed("复核意见");
-  const removed = packageCurrentRemoval(row);
-  const label = review.reviewed ? "撤销复核确认" : removed ? "确认删除结果" : "确认本条已复核";
-  const confirm = button(label,()=>{
-    row[role] = review;
-    review.reviewed = !review.reviewed;
-    changed(removed ? "确认删除结果" : "复核确认");
-    render(true);
-    setNotice(review.reviewed ? (removed ? "已确认本条删除结果。" : "已确认本条复核。") : "已撤销本条复核确认。");
-  },review.reviewed ? "package-review-confirm" : "primary package-review-confirm");
-  panel.append(node("strong",roleTitle[role]+"复核"),labelled("复核意见（选填）",note),confirm);
+  const badge = node("p","本次修改待确认，退出详情会放弃。","small package-draft-notice");
+  const message = node("p","","small");
+  message.setAttribute("role","status");
+  const confirm = button("",()=>{message.textContent = confirmPackageDetail(page,row) || "";});
+  function refreshConfirmation() {
+    const hasDraft = !!(page.draft || page.newCard);
+    const reviewed = !hasDraft && review.reviewed;
+    badge.hidden = !hasDraft;
+    confirm.textContent = reviewed ? "撤销复核确认" : "确认复核";
+    confirm.className = reviewed ? "package-review-confirm" : "primary package-review-confirm";
+  }
+  function saveDraft(edit) {
+    page.draft ||= structuredClone(row);
+    edit(page.draft);
+    message.textContent = "";
+    refreshConfirmation();
+  }
+  if ((page.newCard || page.judgment?.action===packageJudgmentLabels.triggered) && page.judgment?.action!=="remove") {
+    const fields = [];
+    if (!packageIsFullMissing(pending)) {
+      if (page.newCard && !get(pending,"条款类型")) fields.push("条款类型");
+      fields.push(keyEvidence);
+    }
+    if (get(pending,riskField)==="是") fields.push("风险说明","修订建议");
+    for (const field of fields) {
+      const control = node("textarea");
+      control.rows = 2;
+      control.value = get(pending,field);
+      control.oninput = ()=>saveDraft(draft=>draft.fields[field] = control.value);
+      panel.append(labelled(field,control));
+    }
+  }
+  note.oninput = ()=>saveDraft(draft=>reviewData(draft,role).note = note.value);
+  refreshConfirmation();
+  panel.append(badge,labelled("复核意见（选填）",note),message,confirm);
   return panel;
 }
 function updatePackageDetail(page,row,force=false) {
   const {role,element} = page;
   const next = nextPackageRow(row,role);
-  const version = JSON.stringify([row,next?.id]);
+  const version = JSON.stringify([row,page.draft,page.judgment,!!page.newCard,next?.id]);
   if (!force && page.version===version) return;
   page.version = version;
   const offset = element.scrollTop;
-  const view = {...row,...roleProjection(row,role)};
-  const editable = model.stage===role && packageSlot(row)!==undefined;
-  const deleted = packageCurrentRemoval(row);
-  const canEdit = editable && !deleted;
+  const shown = page.draft || row;
+  const view = {...row,...(model.stage===role && (page.draft || page.newCard) ? packageRecordVersion(shown) : roleProjection(row,role))};
+  const type = packageCardType(shown.fields);
+  const restoring = page.judgment?.action==="restore";
+  const removing = page.judgment?.action==="remove";
+  const deleted = packageCurrentRemoval(row) && !restoring;
+  const editable = model.stage===role && packageSlot(row)!==undefined && (deleted || type!=="unrelated");
+  const canEdit = editable && !deleted && !removing;
   const navigation = node("div",null,"package-detail-nav");
   navigation.append(button("返回标注列表",()=>closePackageDetail(role),"package-detail-back"),
     button("定位原文",()=>focusPackageRow(row.id,false)));
@@ -2601,14 +2899,16 @@ function updatePackageDetail(page,row,force=false) {
   stylePackageRiskCard(body,view);
   const status = packageReviewStatus(row,role);
   const heading = node("div",null,"card-head");
-  heading.append(node("h3",get(view,"风险名称") || "缺少风险名称"),packageCardBadges(row,view,role,status));
+  heading.append(node("h3",get(view,"风险名称") || "缺少风险名称"),
+    page.draft || page.newCard ? packageJudgmentBadge(view) : packageCardBadges(row,view,role,status));
   const change = handoffMark(row,view,role);
-  const removal = editable && deleted ? lastRiskRemoval(row) : roleRemoval(row,view,role);
+  const removal = restoring ? null : editable && deleted ? lastRiskRemoval(row) : roleRemoval(row,view,role);
   body.append(heading,packageCardMetadata(view,row.id));
   if (page.editing && canEdit) {
     const editor = node("div",null,"package-edit-form");
-    editPanel(row,editor,{
+    editPanel(structuredClone(shown),editor,{
       toolbar:navigation,
+      stage:edited=>{page.draft = edited;},
       onExit:()=>{
         page.editing = false;
         updatePackageDetail(page,row,true);
@@ -2627,44 +2927,48 @@ function updatePackageDetail(page,row,force=false) {
     page.editing = true;
     updatePackageDetail(page,row,true);
   },"primary package-field-toggle"));
-  if (model.stage===role && !deleted && latestPackageFieldEdit(row)) {
-    navigation.append(button("撤回上次应用",()=>undoPackageFieldEdit(row)));
+  if (canEdit && !page.draft && !page.newCard && latestPackageFieldEdit(row)) {
+    navigation.append(button("撤回上次字段修改",()=>undoPackageFieldEdit(page,row)));
   }
   const commands = node("div",null,"row-actions");
-  if (editable && role==="lawyer" && deleted && removal?.before) {
-    commands.append(button("撤销删除",()=>{
-      restoreRiskCard(row);
-      element.querySelector(".package-field-toggle")?.focus({preventScroll:true});
-    },"primary"));
+  if (editable && deleted && removal?.before) {
+    commands.append(button("恢复风险卡",()=>stagePackageRestore(page,row),"primary"));
   }
   if (removal) commands.append(button("查看删除记录",()=>showLogs(row.id)));
-  if (canEdit) {
-    if (canRemovePackageRow(row)) {
-      commands.append(button("删除风险卡",()=>removeRow(row),"danger"));
+  if (page.draft && !page.newCard) commands.append(button("放弃未确认改动",()=>{
+    delete page.draft;
+    delete page.judgment;
+    updatePackageDetail(page,row,true);
+  }));
+  if (canEdit && !restoring && !page.newCard) {
+    if (canRemovePackageRow(shown)) {
+      commands.append(button("删除风险卡",()=>stagePackageRemoval(page,row),"danger"));
     }
-    const triggered = get(row,riskField)==="是";
-    if (!triggered) commands.append(button(packageJudgmentLabels.triggered,()=>markPackageTriggered(row)));
-    if (triggered || (!packageIsFullMissing(row) && !relatedUntriggered(row.fields))) {
-      const action = packageIsFullMissing(row) ? "missingClear" : "clear";
-      commands.append(button(packageJudgmentLabels[action],()=>updatePackageJudgment(row,action)));
+    if (["related-hit","related-clear","no-clause","missing-clear"].includes(type)) {
+      const triggered = get(shown,riskField)==="是";
+      commands.append(button(triggered ? "标记为未触发" : "标记为触发",()=>stagePackageJudgment(page,row,!triggered)));
+    } else if (get(shown,keyRelevant)==="是" && get(shown,keyClause).trim()) {
+      for (const triggered of [true,false]) commands.append(button(triggered ? "更正为触发" : "更正为未触发",
+        ()=>stagePackageJudgment(page,row,triggered)));
     }
     if (role==="student") commands.append(button("提出问题",()=>editDiscussion("question",{row})));
   }
   if (commands.children.length) body.append(commands);
   if (removal) body.append(node("p","删除理由："+asText(removal.reason),"wrap package-removal-reason"));
-  const opinion = editable ? packageReviewPanel(row,role) : notePanel(row,role,false);
+  if (removing) body.append(node("p","待确认删除："+page.judgment.reason,"wrap package-removal-reason"));
+  const opinion = editable ? packageReviewPanel(page,row) : notePanel(row,role,false);
   if (change?.note) opinion.classList.add("package-diff-value");
   body.append(opinion);
   if (change?.binding) body.append(node("p","本轮调整了合同、规则或条款定位。","small package-diff-value"));
   const values = node("dl",null,"summary-grid package-fields");
-  const shown = canEdit ? row : view;
-  const unexpected = packageCardBlankFields(packageCardType(shown.fields)).filter(field=>get(shown,field).trim());
+  const fieldsView = editable ? shown : view;
+  const unexpected = packageCardBlankFields(packageCardType(fieldsView.fields)).filter(field=>get(fieldsView,field).trim());
   if (unexpected.length) body.append(node("p","按此卡片类型应留空的字段："+unexpected.join("、")+"。请核对原值。","small package-validation-problem"));
   if (role==="student") {
-    appendReviewFields(values,row.original_fields,shown,["AI 初标","实习生复核"]);
+    appendReviewFields(values,row.original_fields,fieldsView,["AI 初标","实习生复核"]);
   } else {
     const submitted = model.stage==="lawyer" ? null : row.student_view?.fields ?? row.submitted_fields ?? change?.before;
-    appendReviewFields(values,submitted,shown,["实习生复核","律师复核"]);
+    appendReviewFields(values,submitted,fieldsView,["实习生复核","律师复核"]);
   }
   body.append(node("h3",role==="student" && !row.student_view && !row.submitted_fields && !row.added_by ? "AI 初标字段" : "标注字段"),values);
   if (canEdit && !samePackageValue(row.fields,view.fields)) {
@@ -2734,16 +3038,14 @@ function renderPackage(keepScroll) {
     block.append(text);
     if (model.stage!=="final") {
       const actions = node("div",null,"row-actions package-clause-actions");
-      for (const [label,triggered] of [["新增风险批注",true],["新增未触发风险批注",false]]) {
-        let selection = "";
-        const add = button(label,()=>addAnnotation(section,selection,false,triggered,source,alternate));
-        add.onpointerdown = event=>{
-          const source = selectedClauseEvidence();
-          selection = source?.sectionId===id ? source.text : "";
-          if (selection) event.preventDefault();
-        };
-        actions.append(add);
-      }
+      let selection = "";
+      const add = button("新增风险卡",()=>addPackageCard(section,source,alternate,selection));
+      add.onpointerdown = event=>{
+        const source = selectedClauseEvidence();
+        selection = source?.sectionId===id ? source.text : "";
+        if (selection) event.preventDefault();
+      };
+      actions.append(add);
       block.append(actions);
     }
     leftSections.set(id,block);
@@ -2790,9 +3092,9 @@ function renderPackage(keepScroll) {
     for (const side of Object.values(packageSide)) align(byId(side),byId(side).querySelector(".row-section[data-section='']"));
   }
   for (const page of packageDetailPages.values()) {
-    const row = rowById.get(page.rowId);
+    const row = page.newCard?.row || rowById.get(page.rowId);
     if (!row || (model.stage===page.role && openEditor===page.rowId)) continue;
-    if (packageCardHidden(row,page.role)) closePackageDetail(page.role);
+    if (row.replaced_by || (packageListType(row,page.role)==="unrelated" && byId("scope").value!=="unrelated")) closePackageDetail(page.role);
     else updatePackageDetail(page,row);
   }
   byId("match").textContent = "当前显示 "+visible.student.length+" 张";
@@ -2821,7 +3123,7 @@ function finalPackageIssues(project,requireOpinion=true) {
   const normalize = normalizeClauseText;
   const compact = text=>text.replace(/[\r\n\t \u3000\u00a0]+/g,"");
   const units = new Map(project.contracts.map(contract=>[contract.id,
-    new Map(contract.sections.map(section=>[section.id,normalize(section.text)]))]));
+    new Map(contract.sections.map(section=>[section.id,sectionAnnotationTexts(section)]))]));
   function issueContext(contractId,ruleId,sectionId,scope,row) {
     const contract = contracts.get(contractId), rule = rules.get(ruleId);
     const section = contract?.sections.find(item=>item.id===sectionId);
@@ -2852,12 +3154,13 @@ function finalPackageIssues(project,requireOpinion=true) {
     }
   }
   for (const row of project.rows) {
+    if (row.replaced_by) continue;
     const fields = row.fields;
     const contract = contracts.get(row.contract_id), rule = rules.get(row.rule_id);
     const contractUnits = units.get(row.contract_id);
     const groupKey = keyFor(row.contract_id,row.rule_id,row.matter_id);
     const clauseText = normalize(get(row,keyClause));
-    const section = row.section_id || (contractUnits ? [...contractUnits].findLast(([,text])=>text===clauseText)?.[0] : undefined);
+    const section = row.section_id || (contractUnits ? [...contractUnits].findLast(([,texts])=>texts.includes(clauseText))?.[0] : undefined);
     let scope = row.scope || (clauseText ? "slice" : "unlinked");
     const type = packageCardType(fields);
     if (scope==="unlinked" && (paths.get(groupKey)?.mode==="full_missing" || type==="no-clause" || type==="missing-clear")) scope="full_missing";
@@ -2907,7 +3210,7 @@ function finalPackageIssues(project,requireOpinion=true) {
       if (relevant!=="否") add(keyRelevant,"全文缺失记录没有主条款，相关性应为「否」。");
       if (row.section_id) add("条款定位","全文缺失记录应以整份合同为审查对象。");
     } else {
-      if (!clause || contractUnits?.get(section)!==clause) problems.push(clauseMismatchIssue(row,contract,section));
+      if (!clause || !contractUnits?.get(section)?.includes(clause)) problems.push(clauseMismatchIssue(row,contract,section));
       if (relevant==="否" && trigger==="是") add(keyRelevant,"有主条款且触发风险时，相关性应为「是」。");
       if (relevant==="是" && trigger==="是" && !evidence) {
         add(keyEvidence,"这条标注已判为触发，需要从左侧对应条款摘录支持判断的原文。",{editField:keyEvidence});
@@ -2936,7 +3239,7 @@ function finalPackageIssues(project,requireOpinion=true) {
     else for (const event of row.review_history || []) {
       if (!packageRoles.includes(event?.stage)) add("复核记录","有一条历史操作缺少有效的复核人角色。",{logs:true});
       if (event?.action==="remove" && (typeof event.reason!=="string" || !event.reason.trim() ||
-          !canRemovePackageRow({...row,fields:event.before}) || !packageFieldNames.every(field=>Object.hasOwn(event.before || {},field)))) {
+          !["是","否"].includes(event.before?.[riskField]) || !packageFieldNames.every(field=>Object.hasOwn(event.before || {},field)))) {
         add("删除记录","删卡记录缺少原因或删除前的完整标注。",{logs:true});
       }
     }
@@ -3556,9 +3859,9 @@ function mappingInputs(row, grid) {
   contract.onchange = () => populateSections();
   scope.onchange = () => { section.disabled = scope.value === "full_missing"; };
   if (packageMode) scope.disabled = true;
-  if (packageMode && (packageSharedRows.has(row.id) || packagePairByContract.has(row.contract_id))) {
+  if (packageMode && (packageSharedRows.has(row.id) || packagePairByContract.has(row.contract_id) || packageHasReplacementBinding(row))) {
     contract.disabled = true;
-    if (packageSharedRows.has(row.id)) rule.disabled = scope.disabled = section.disabled = true;
+    if (packageSharedRows.has(row.id) || packageHasReplacementBinding(row)) rule.disabled = scope.disabled = section.disabled = true;
     else for (const item of rule.options) {
       if (item.value!==row.rule_id && rulesById.get(item.value)?.stance!==get(row,"立场")) item.disabled = true;
     }
@@ -3729,6 +4032,13 @@ function editPanel(row,article,options={}) {
       openEditor = "";
       options.onExit();
       setNotice("字段没有变化。");
+      return;
+    }
+    if (options.stage) {
+      options.stage(row);
+      openEditor = "";
+      options.onExit();
+      setNotice("字段修改暂存于详情，请点击「确认复核」。");
       return;
     }
     dirty = true;
@@ -4167,7 +4477,16 @@ function showLogs(onlyRowId) {
     }
     if (removedRisk(row)) {
       box.append(node("p",packageMode && get(row,keyRelevant)==="否" ? "当前结论　不相关（已删卡）" : "当前结论　无风险","small"));
-      if (model.stage !== "final") {
+      if (packageMode && model.stage !== "final" && !row.replaced_by) {
+        box.append(button("打开卡片详情",()=>{
+          dialog.close();
+          resetRiskFilters(row.contract_id);
+          revealPackageRowVersion(row);
+          render();
+          openPackageDetail(row,model.stage);
+        }));
+      }
+      if (!packageMode && model.stage !== "final") {
         const note = node("textarea");
         const review = row[model.stage] || {reviewed:false,note:""};
         const lawyer = model.stage === "lawyer";
@@ -4529,7 +4848,8 @@ function launch() {
       tools.append(match);
       if (!packageMode || model.stage==="student") tools.append(reviewProgressLabel());
       if (model.stage === "student") {
-        const commands = [button("新增全文缺失风险",()=>addAnnotation(null)),button(packageMode ? "确认所有未复核的标注" : "确认当前筛选的风险卡",confirmCurrent)];
+        const commands = [button(packageMode ? "确认所有未复核的标注" : "确认当前筛选的风险卡",confirmCurrent)];
+        if (!packageMode) commands.unshift(button("新增全文缺失风险",()=>addAnnotation(null)));
         if (packageMode) tools.append(packageMenu("操作", [...commands,button("提出合同问题",()=>editDiscussion("question"))]));
         else tools.append(...commands);
       }
@@ -4541,6 +4861,9 @@ function launch() {
     scroller.setAttribute("aria-label",label);
     scroller.addEventListener("scroll",()=>onScroll(side),{passive:true});
     scroller.addEventListener("toggle",refreshScrollTail,true);
+    if (side==="left" && packageMode && model.stage!=="final") {
+      heading.append(button("新增全文缺失风险",()=>addPackageCard(null)));
+    }
     pane.append(heading,scroller);
     study.append(pane);
   }
@@ -4556,8 +4879,8 @@ function launch() {
       if (model.stage!=="student") tools.append(reviewProgressLabel());
     }
     if (model.stage === "lawyer") {
-      const commands = [button("新增全文缺失风险",()=>addAnnotation(null)),
-        button(packageMode ? "确认所有未复核的标注" : "确认当前筛选的风险卡",confirmCurrent)];
+      const commands = [button(packageMode ? "确认所有未复核的标注" : "确认当前筛选的风险卡",confirmCurrent)];
+      if (!packageMode) commands.unshift(button("新增全文缺失风险",()=>addAnnotation(null)));
       if (packageMode) tools.append(packageMenu("操作",commands));
       else {
         const add = button("新增风险批注",addLawyerAnnotation);
@@ -4610,7 +4933,7 @@ function launch() {
   render();
 }
 window.addEventListener("beforeunload",event => {
-  if (openEditor || dirty) {
+  if (openEditor || dirty || (packageMode && packageHasDetailDraft())) {
     event.preventDefault();
     event.returnValue = true;
   }

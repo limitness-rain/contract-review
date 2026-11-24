@@ -72,7 +72,7 @@ def workbook_rows(project):
     if project["stage"] != "final":
         return rows
     paired = {contract_id for pair in version_pairs(project) for contract_id in pair["contracts"]}
-    return [row for row in rows if not (row["contract_id"] in paired
+    return [row for row in rows if not row.get("replaced_by") and not (row["contract_id"] in paired
             and (row.get("lawyer") or {}).get("reviewed") is True and is_current_removal(row))]
 
 
@@ -189,6 +189,14 @@ def read_package(path):
             raise ValueError("操作角色与当时的复核阶段不一致")
         apply_event(project, rows, event)
     project["rows"] = list(rows.values())
+    for row in project["rows"]:
+        if not row.get("replaced_by"):
+            continue
+        replacement = rows.get(row["replaced_by"], {})
+        if (review.card_type(row["fields"]) != "unrelated" or not replacement.get("added_by") or replacement.get("replaced_by")
+                or any((row.get(key) or "") != (replacement.get(key) or "") for key in ("contract_id", "rule_id", "matter_id"))
+                or (row.get("section_id") and row["section_id"] != replacement.get("section_id"))):
+            raise ValueError(f"新增卡片与原切片记录未能对应：{row['id']}")
     if project["stage"] != manifest["stage"]:
         raise ValueError("复核阶段与操作历史不一致")
     if manifest["version"] == PAIRED_VERSION:

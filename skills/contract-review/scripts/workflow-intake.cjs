@@ -11,13 +11,13 @@ try {
   for (const file of ["package-codec.js", "package-intake.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, file), "utf8"), context, {filename:file});
   }
-  const result = vm.runInContext(`
-    for (const contract of input.contracts) {
-      const rows = input.rows.filter(row=>row.contract_id===contract.id && row.scope==="slice");
-      const clauses = new Map(rows.map(row=>[row.fields["条款原文"],row.id]));
-      const sections = locateIntakeSections(contract,clauses);
-      for (const row of rows) row.section_id = sections.get(row.fields["条款原文"]);
-    }
+  const result = vm.runInContext(input.check_clauses ? `
+    JSON.stringify(input.contracts.map(({blocks,clauses})=>{
+      const layout = intakeWordLayout(blocks);
+      return clauses.map(clause=>findIntakeClause(layout,officeCompact(clause)).matches.length);
+    }));
+  ` : `
+    locateIntakeContracts(input.contracts,input.rows);
     if (input.paired) input.version_pair = intakeVersionPair(input.contracts,input.rows);
     else {
       const pairs = detectIntakeVersionPairs(input.contracts,input.rows);

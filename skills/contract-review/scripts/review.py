@@ -305,14 +305,24 @@ def validate(project, contracts, rules, final=False, *, review_card_types=False)
     selected = {}
     full_texts = {}
     for key, contract in contracts.items():
-        sections = contract["sections"]
-        full_texts[key] = {same_text(item["text"]): item["id"] for item in sections}
-        selected[key] = {item["id"]: same_text(item["text"]) for item in sections}
+        selected[key] = {}
+        for item in contract["sections"]:
+            text = same_text(item["text"])
+            alternatives = item.get("annotation_texts")
+            values = {text}
+            if isinstance(alternatives, list):
+                compact = re.sub(r"[\s\ufeff]+", "", text)
+                values.update(same_text(value) for value in alternatives if isinstance(value, str)
+                              and re.sub(r"[\s\ufeff]+", "", value) == compact)
+            selected[key][item["id"]] = values
+        full_texts[key] = {text: section_id for section_id, values in selected[key].items() for text in values}
 
     row_groups = defaultdict(list)
     duplicates = defaultdict(set)
     split_judgments = {}
     for row_id, row in rows.items():
+        if row.get("replaced_by"):
+            continue
         fields = row.get("fields", {})
         if not isinstance(fields, dict):
             raise ValueError(f"{row_id} 的 fields 应为对象")
@@ -365,7 +375,7 @@ def validate(project, contracts, rules, final=False, *, review_card_types=False)
                 add(row_id, FORMAT, "有主条款且触发风险时，相关性应填是", field=REL)
             if not clause:
                 add(row_id, JUDGMENT, "无主切片，需用规则及全文核对是否为独立全文缺失记录")
-            elif contract and selected[c_id].get(section_id) != clause:
+            elif contract and clause not in selected[c_id].get(section_id, ()):
                 add(row_id, COVERAGE, "条款原文无法与合同版本的完整一级切片精确对应", field=CLAUSE)
             if f[REL] == "是" and not evidence:
                 add(row_id, JUDGMENT, "相关记录请检查主切片是否有支持判断的原文", f[HIT] == "是", field=EVIDENCE)

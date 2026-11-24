@@ -398,6 +398,15 @@ def review_tool_path():
     return tool
 
 
+def run_intake(data):
+    result = subprocess.run(["node", str(Path(__file__).with_name("workflow-intake.cjs"))],
+                            input=json.dumps(data, ensure_ascii=False), capture_output=True,
+                            encoding="utf-8", timeout=120, check=False)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or "合同与标注切片未能对应")
+    return json.loads(result.stdout)
+
+
 def prepare(args):
     if args.zip.suffix.lower() != ".zip" or args.zip.exists():
         raise ValueError("请为初始包指定尚不存在的 .zip 输出文件")
@@ -435,13 +444,8 @@ def prepare(args):
     annotated = {row["contract_id"] for row in rows}
     if args.paired and any(contract["id"] not in annotated for contract in contracts.values()):
         raise ValueError("双版本同时复核要求两份合同都已有标注")
-    result = subprocess.run(["node", str(Path(__file__).with_name("workflow-intake.cjs"))],
-                            input=json.dumps({"fields":review.FIELDS, "contracts":list(contracts.values()),
-                                              "rows":rows, "paired":args.paired}, ensure_ascii=False),
-                            capture_output=True, encoding="utf-8", timeout=120, check=False)
-    if result.returncode:
-        raise ValueError(result.stderr.strip() or "合同与标注切片未能对应")
-    project = json.loads(result.stdout)
+    project = run_intake({"fields":review.FIELDS, "contracts":list(contracts.values()),
+                          "rows":rows, "paired":args.paired})
     project.pop("paired")
     title = args.type + (" · 双版本复核" if args.paired else "")
     project.update(title=title, contract_type=args.type, stage="student", rules=list(rules.values()),
@@ -497,6 +501,8 @@ def check_embedded_sources(zip_path, incoming, rows, add):
     for row in rows:
         by_contract[row["contract_id"]].append(row)
     by_identity = {(item["sha256"], item["name"]):item for item in manifest["sources"]}
+    checks = []
+    entries = []
     with ZipFile(zip_path) as archive, TemporaryDirectory() as temporary:
         for contract in project["contracts"]:
             source = by_identity.get((contract.get("source_sha256"), contract["name"]))
@@ -506,29 +512,21 @@ def check_embedded_sources(zip_path, incoming, rows, add):
                 continue
             destination = Path(temporary) / "合同.docx"
             destination.write_bytes(archive.read(source["entry"]))
-            blocks = [review.layout_text(block["text"]) for block in sources.docx_contract(destination)["blocks"]]
-            offsets = {0}
-            end = 0
-            for block in blocks:
-                end += len(block)
-                offsets.add(end)
-            full_text = "".join(blocks)
-            matches = {}
-            for row in by_contract[contract["id"]]:
-                for field in (review.CLAUSE, review.ASSOCIATED):
-                    clause = review.layout_text(row["fields"].get(field, ""))
-                    if not clause:
-                        continue
-                    if clause not in matches:
-                        matches[clause] = 0
-                        start = full_text.find(clause)
-                        while start != -1:
-                            if start in offsets and start + len(clause) in offsets:
-                                matches[clause] += 1
-                            start = full_text.find(clause, start + 1)
+            fields = [(row["id"], field, row["fields"].get(field, ""))
+                      for row in by_contract[contract["id"]] for field in (review.CLAUSE, review.ASSOCIATED)]
+            fields = [item for item in fields if item[2].strip()]
+            if fields:
+                clauses = list(dict.fromkeys(clause for _, _, clause in fields))
+                checks.append({"blocks":sources.docx_contract(destination)["blocks"], "clauses":clauses})
+                entries.append(fields)
+        if checks:
+            results = run_intake({"check_clauses":True, "contracts":checks})
+            for check, fields, counts in zip(checks, entries, results):
+                matches = dict(zip(check["clauses"], counts))
+                for row_id, field, clause in fields:
                     if matches[clause] != 1:
-                        add(field, "无法在随包 Word 的完整段落或表格边界唯一定位。",
-                            row_id=row["id"], blocking=True)
+                        add(field, "无法在随包 Word 的完整段落、整表或表格整行唯一定位。",
+                            row_id=row_id, blocking=True)
 
         rule_sources = project.get("formal_rule_sources") or []
         if not rule_sources:
@@ -613,9 +611,10 @@ def preflight(args):
     for row in rows:
         if not row["fields"].get(review.LEVEL, "").strip():
             add(review.LEVEL, "风险等级为空，正式发布前须核对专家规则。", row_id=row["id"], blocking=True)
-    independent_rules = check_embedded_sources(args.zip, incoming, project["rows"], add)
+    active_rows = [row for row in project["rows"] if not row.get("replaced_by")]
+    independent_rules = check_embedded_sources(args.zip, incoming, active_rows, add)
     if args.rules:
-        compare_formal_rules(project["rows"], rule_set(args.rules), add)
+        compare_formal_rules(active_rows, rule_set(args.rules), add)
         independent_rules = True
     if args.excel:
         try:
