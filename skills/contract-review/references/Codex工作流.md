@@ -2,9 +2,9 @@
 
 ## 开始前
 
-在本机 Codex 打开项目，或解压「合同标注复核工具.zip」，或请 `$skill-installer` 从 [contract-review 仓库](https://github.com/limitness-rain/contract-review)安装 `contract-review`。仓库内的安装路径为 `skills/contract-review`。用本机 Python、Node.js 和 `lark-cli`。以下命令的 `$REVIEW_WORKFLOW` 是 `review_workflow.py` 的实际路径，开发项目在 `tools/`，Skill 内在 `scripts/`。示例中的 `work/` 使用可写目录。
+在本机 Codex 打开项目，或解压「合同标注复核工具.zip」，或请 `$skill-installer` 从 [contract-review 仓库](https://github.com/limitness-rain/contract-review)安装 `contract-review`。仓库内的安装路径为 `skills/contract-review`。建包用本机 Python 和 Node.js，走飞书流程时另需 `lark-cli`。以下命令的 `$REVIEW_WORKFLOW` 是 `review_workflow.py` 的实际路径，开发项目在 `tools/`，Skill 内在 `scripts/`。示例中的 `work/` 使用可写目录。
 
-优先复用用户已登录的飞书身份。授权或过期时用 `lark-cli auth status --json --verify` 确认；按错误反馈用 `lark-cli auth login --scope '<缺少的 scope>' --no-wait --json` 发起增量授权。给用户原始授权链接和由 `lark-cli auth qrcode` 生成的二维码，用户完成后用 `lark-cli auth login --device-code '<返回的 device_code>'` 完成授权。如果运行环境无法访问本机钥匙串，使用允许访问该钥匙串的本机执行环境。核对企业身份，然后继续原操作。取件用本人身份，只读取来源。
+走飞书流程时，优先复用用户已登录的飞书身份。授权或过期时用 `lark-cli auth status --json --verify` 确认；按错误反馈用 `lark-cli auth login --scope '<缺少的 scope>' --no-wait --json` 发起增量授权。给用户原始授权链接和由 `lark-cli auth qrcode` 生成的二维码，用户完成后用 `lark-cli auth login --device-code '<返回的 device_code>'` 完成授权。如果运行环境无法访问本机钥匙串，使用允许访问该钥匙串的本机执行环境。核对企业身份，然后继续原操作。取件用本人身份，只读取来源。
 
 ## 各阶段共用固定工具
 
@@ -15,6 +15,24 @@
 同一批可以混用多个合同的单版本和双版本 Word。双版本用同一文件名主体及实际立场后缀，并在统一标注集中分别填写两份文件的全名和对应立场。翻转视图按条款比较两版原文，异文条款可用「切换立场」同步切换原文及中、右栏卡片。同文原文合并显示并使用中性色，单版本原文也使用中性色。两栏风险卡按立场分色，整个批次同立场同色。
 
 实习生、律师和终版验收显示五类卡片。实习生和律师提交前均需确认前四类。第五类「普通切片与规则不相关」无需确认，默认收起，仅选择该类型时在中、右栏列出。「当前显示」按各栏的可见卡片计数，「整包必审已确认」汇总整包进度，双版本通用批注只需确认一次。[五类卡片的字段口径](./标注与导出.md#15-个字段怎么显示怎么填)
+
+## 用上传的本地材料生成初始 ZIP
+
+用户带文件或文件夹来建包时，先确认本批是否仅用上传材料、跳过飞书取件。用户已明确选择时直接继续。确认后只在用户给出的范围内处理，并按合同名称、类型和批次核对材料。材料不足时指出具体缺件、缺列或冲突，请用户补充本地材料。切换到飞书须由用户选择。
+
+1. 用 `local-inputs` 清点一个或多个文件／文件夹。文件夹下查找 DOCX 和 XLSX，按表内「合同附件名称」选择实际用于标注的合同。核对 `unreferenced_contracts` 中未被版名引用的 Word。若同名内容不同或缺少实际 Word，先确认版本。找不到有效标注工作表、不同工作簿对应同一批且数据有重叠时，核对后用选定文件重跑。多工作表的 Excel 以「标注集」工作表为准。
+2. 基于 `本地材料.json` 另存 `类型核验.json`。逐份核对交易类型、正文、有效附件和实际标注版本，保留 `contracts` 中的路径、名称、SHA-256，填写 `match` 与 `reason`。用[标注与导出](./标注与导出.md)核对切片、证据和覆盖，保留原表判断和值。有关联的规则正式 JSON 也可作为本地材料传 `--rules`。只提供标注表时以表内规则字段建包，说明独立正式规则和漏标覆盖待核。
+3. 用 `prepare --local-inputs` 建包，再用 `receive --stage student` 回读校验。分别交付分发位置或项目根目录中的固定「合同复核工具.html」和初始 ZIP，并说明缺项或来源疑点。由用户选择是否代导入。
+
+```sh
+python3 "$REVIEW_WORKFLOW" local-inputs --type 保管合同 --out work/保管合同/本地材料.json \
+  '/path/to/上传材料文件夹'
+python3 "$REVIEW_WORKFLOW" prepare --type 保管合同 --local-inputs work/保管合同/本地材料.json \
+  --type-check work/保管合同/类型核验.json --zip work/保管合同/初始包.zip
+python3 "$REVIEW_WORKFLOW" receive --zip work/保管合同/初始包.zip --stage student
+```
+
+散传时，将第一个命令中的文件夹参数换成一个或多个 Word 路径及 Excel 路径。不同工作簿的记录保留各自来源编号。双立场 Word 按同一文件主体、对应立场后缀及表内附件全名配对。
 
 ## 按合同类型取件并生成初始 ZIP
 

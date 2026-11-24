@@ -10,9 +10,10 @@
 
   Skill 在仓库的 `skills/contract-review` 目录。直接运行安装脚本时，用仓库首页 URL 搭配 `--path skills/contract-review`。仓库为私有时，使用有访问权限的 GitHub 账号。
 - **把工具 ZIP 交给 Codex**。在可访问本机文件和终端的 Codex 中提供 ZIP，告诉 Codex「解压并使用其中的 contract-review 技能，复核保管合同」。也可以把解压目录直接作为 Codex 工作区。工具 ZIP 与每个批次的复核 ZIP 各有用途。
+- **用自己准备的材料建包**。在 Codex 对话中上传材料文件夹，或上传实际用于标注的 Word 和标注 Excel。确认本次使用上传材料后，Codex 核对版本并分别给出固定网页和初始 ZIP。[本地材料工作流](./skills/contract-review/references/Codex工作流.md#用上传的本地材料生成初始-zip)
 - **离线手动处理**。双击 [合同复核工具.html](./合同复核工具.html)，导入复核数据 ZIP，或从本地 Word 与 Excel 建包。
 
-Codex 取件和写入用当前机器的 `lark-cli` 登录身份。需要 Python 3.9+、Node.js 和 Chrome 或 Edge。飞书授权由本人在本机完成，仓库没有账号凭据、真实合同、标注集或交接包。
+工具需要 Python 3.9+、Node.js 和 Chrome 或 Edge。走飞书取件或写入时，使用当前机器的 `lark-cli` 登录身份，授权由本人在本机完成。仓库没有账号凭据、真实合同、标注集或交接包。
 
 ## 三句可直接使用
 

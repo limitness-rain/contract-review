@@ -254,35 +254,139 @@ def contract_paths(checks, contract_type):
     return results
 
 
-def annotation_rows(paths, contracts, rule_keys):
-    rows = []
+def annotation_fields(paths):
     for index, path in enumerate(paths, 1):
         is_excel = path.suffix.lower() == ".xlsx"
-        records = review.read_xlsx(path) if is_excel else review.imported_rows(path)
-        for identifier, values in records:
-            if not has_annotation_values(values):
-                continue
-            suffix = f"-表{index}" if is_excel and len(paths) > 1 else ""
-            rid = identifier + suffix
-            if not set(review.FIELDS) <= values.keys():
-                raise ValueError(f"{path.name} {rid} 缺少标准标注字段")
-            fields = {field:review.value_of(values[field]) for field in review.FIELDS}
-            contract = contracts.get(normalize("NFC", fields[review.CONTRACT]))
-            if not contract:
-                raise ValueError(f"{path.name} {rid} 指向未核验的合同版本：{fields[review.CONTRACT]}")
-            rule = rule_keys.get((fields[review.RISK], fields[review.STANCE]))
-            if not rule:
-                raise ValueError(f"{path.name} {rid} 无法唯一对应正式规则：{fields[review.RISK]}／{fields[review.STANCE]}")
-            scope = "slice" if fields[review.CLAUSE].strip() else "full_missing"
-            if scope == "full_missing" and (fields[review.REL] != "否" or fields[review.CLAUSE_TYPE]
-                    or (fields[review.EVIDENCE].strip() and not review.no_attention(fields))):
-                raise ValueError(f"{path.name} {rid} 不能作为无主条款的合同级记录")
-            rows.append({"id":rid, "contract_id":contract["id"], "rule_id":rule["id"],
-                         "fields":fields, "scope":scope})
+        try:
+            records = review.read_xlsx(path) if is_excel else review.imported_rows(path)
+            for identifier, values in records:
+                if not has_annotation_values(values):
+                    continue
+                suffix = f"-表{index}" if is_excel and len(paths) > 1 else ""
+                rid = identifier + suffix
+                if not set(review.FIELDS) <= values.keys():
+                    raise ValueError(f"{rid} 缺少标准标注字段")
+                yield path, rid, {field:review.value_of(values[field]) for field in review.FIELDS}
+        except (*MATERIAL_ERRORS, StopIteration) as error:
+            raise ValueError(f"{path.name}：{error or '无法读取标注工作表'}") from error
+
+
+def annotation_rule(rules, fields, where):
+    key = fields[review.RISK], fields[review.STANCE]
+    if not all(part.strip() for part in key):
+        return None
+    if key not in rules:
+        rules[key] = {"id":f"R{len(rules)+1}", "name":key[0], "stance":key[1], "level":"", "logic":""}
+    rule = rules[key]
+    for field in (review.LEVEL, review.LOGIC):
+        value, attr = fields[field], review.RULE_FIELDS[field]
+        if value.strip():
+            if rule[attr] and rule[attr] != value:
+                raise ValueError(f"{where} 的同名同立场规则原值冲突：{key[0]}／{key[1]}（{field}）")
+            rule[attr] = value
+    return rule
+
+
+def annotation_rows(paths, contracts, rule_keys, *, derive_rules=False):
+    rows = []
+    for path, rid, fields in annotation_fields(paths):
+        where = f"{path.name} {rid}"
+        contract = contracts.get(normalize("NFC", fields[review.CONTRACT]))
+        if not contract:
+            raise ValueError(f"{where} 指向未核验的合同版本：{fields[review.CONTRACT]}")
+        key = fields[review.RISK], fields[review.STANCE]
+        rule = annotation_rule(rule_keys, fields, where) if derive_rules else rule_keys.get(key)
+        if not rule and not derive_rules:
+            raise ValueError(f"{where} 无法唯一对应正式规则：{key[0]}／{key[1]}")
+        scope = "slice" if fields[review.CLAUSE].strip() else "full_missing"
+        if scope == "full_missing" and (fields[review.REL] != "否" or fields[review.CLAUSE_TYPE]
+                or (fields[review.EVIDENCE].strip() and not review.no_attention(fields))):
+            raise ValueError(f"{where} 不能作为无主条款的合同级记录")
+        rows.append({"id":rid, "contract_id":contract["id"], "rule_id":rule["id"] if rule else "",
+                     "fields":fields, "scope":scope})
     if not rows:
         raise ValueError("标注集没有可复核的记录")
     review.index_records(rows, "标注行")
     return rows
+
+
+def local_files(inputs):
+    extensions = {".docx", ".xlsx"}
+    files = {}
+    for source in inputs:
+        path = source.resolve(strict=True)
+        if path.is_dir():
+            candidates = (item for item in sorted(path.rglob("*"))
+                          if item.suffix.lower() in extensions and not item.is_symlink()
+                          and not any(part.startswith((".", "~$")) for part in item.relative_to(path).parts)
+                          and item.is_file())
+        elif path.is_file() and path.suffix.lower() in extensions and not path.name.startswith("~$"):
+            candidates = (path,)
+        else:
+            raise ValueError(f"请提供文件夹、合同 DOCX 或标注集 XLSX：{source}")
+        for candidate in candidates:
+            files[candidate] = None
+    return list(files)
+
+
+def index_local_inputs(args):
+    files = local_files(args.inputs)
+    docs = defaultdict(list)
+    workbooks = {}
+    for path in files:
+        if path.suffix.lower() == ".docx":
+            docs[normalize("NFC", path.name)].append(path)
+        else:
+            workbooks.setdefault(file_hash(path), path)
+    if not docs or not workbooks:
+        raise ValueError("本地材料须包含实际用于标注的合同 DOCX 和标注集 XLSX。")
+    names = {}
+    for path in workbooks.values():
+        found = False
+        for _, rid, fields in annotation_fields([path]):
+            found = True
+            name = fields[review.CONTRACT]
+            if not name.strip():
+                raise ValueError(f"{path.name} {rid} 的合同附件名称为空。")
+            key = normalize("NFC", name)
+            if names.setdefault(key, name) != name:
+                raise ValueError(f"{path.name} {rid} 的合同附件名称与其他行写法不一致：{name}")
+        if not found:
+            raise ValueError(f"{path.name} 没有可复核的标注记录。")
+    missing = [name for key, name in names.items() if key not in docs]
+    if missing:
+        raise ValueError("缺少标注集引用的合同 Word：" + "、".join(missing))
+    contracts = []
+    for key, name in names.items():
+        paths = docs[key]
+        hashes = {file_hash(path) for path in paths}
+        if len(hashes) != 1:
+            raise ValueError(f"有同名异版的合同，请指定实际用于标注的一份：{name}\n" + "\n".join(map(str, paths)))
+        contracts.append({"path":str(paths[0]), "name":name, "sha256":hashes.pop(),
+                          "match":None, "reason":""})
+    write_report(args.out, {"contract_type":args.type, "source":"local", "contracts":contracts,
+                           "annotations":[{"path":str(path), "sha256":checksum}
+                                          for checksum, path in workbooks.items()],
+                           "unreferenced_contracts":[str(path) for key, paths in docs.items()
+                                                     if key not in names for path in paths]})
+    print(args.out.resolve())
+
+
+def local_annotations(path, contract_type, type_check):
+    selected = review.read_data(path)
+    if selected.get("source") != "local" or selected.get("contract_type") != contract_type:
+        raise ValueError("本地材料清单与当前合同类型不一致。")
+    indexed = {(item["path"], item["name"], item["sha256"]) for item in selected["contracts"]}
+    checked = {(str(Path(item["path"]).resolve()), item["name"], item["sha256"]) for item in type_check["contracts"]}
+    if checked != indexed or len(type_check["contracts"]) != len(selected["contracts"]):
+        raise ValueError("类型核验须覆盖本地材料清单中的全部合同及对应文件哈希。")
+    paths = []
+    for item in selected["annotations"]:
+        workbook = Path(item["path"])
+        if file_hash(workbook) != item["sha256"]:
+            raise ValueError(f"{workbook.name} 的内容已变化，请重新核对本地材料。")
+        paths.append(workbook)
+    return paths
 
 
 def review_tool_path():
@@ -299,7 +403,11 @@ def prepare(args):
         raise ValueError("请为初始包指定尚不存在的 .zip 输出文件")
     tool = review_tool_path()
     type_check = review.read_data(args.type_check)
-    if args.materials:
+    if args.local_inputs:
+        if args.annotations:
+            raise ValueError("使用本地材料清单时，标注集随清单读取。")
+        args.annotations = local_annotations(args.local_inputs, args.type, type_check)
+    elif args.materials:
         if args.annotations or args.rules:
             raise ValueError("使用取件结果时，原标注集和正式规则从取件结果读取。")
         materials = review.read_data(args.materials)
@@ -315,14 +423,15 @@ def prepare(args):
             raise ValueError("类型核验须包含本次取件的全部评测合同及对应附件标识、名称和哈希。")
         args.annotations = [Path(materials["annotations"])]
         args.rules = [Path(path) for path in materials["rules"]]
-    if not args.annotations or not args.rules:
+    derive_rules = bool(args.local_inputs and not args.rules)
+    if not args.annotations or (not args.rules and not derive_rules):
         raise ValueError("请提供取件结果，或同时提供原标注集和正式规则。")
     checks = contract_paths(type_check, args.type)
     contracts = {normalize("NFC", c["name"]):c for c, _, _ in checks}
     if not contracts or len(contracts) != len(checks) or (args.paired and len(contracts) != 2):
         raise ValueError("合同文件名须唯一；双版本须提供两份已核验合同")
-    rules = rule_set(args.rules)
-    rows = annotation_rows(args.annotations, contracts, rules)
+    rules = {} if derive_rules else rule_set(args.rules)
+    rows = annotation_rows(args.annotations, contracts, rules, derive_rules=derive_rules)
     annotated = {row["contract_id"] for row in rows}
     if args.paired and any(contract["id"] not in annotated for contract in contracts.values()):
         raise ValueError("双版本同时复核要求两份合同都已有标注")
@@ -337,14 +446,19 @@ def prepare(args):
     title = args.type + (" · 双版本复核" if args.paired else "")
     project.update(title=title, contract_type=args.type, stage="student", rules=list(rules.values()),
                    type_checks=[{k:item[k] for k in ("name", "sha256", "reason", "file_token") if k in item}
-                                for _, _, item in checks],
-                   formal_rule_sources=[{"name":path.name, "sha256":package.digest(path.read_bytes())} for path in args.rules])
+                                for _, _, item in checks])
+    if derive_rules:
+        project["semantic_checks"] = [{"check":"建包来源", "blocking":False,
+                                       "message":"规则字段取自本地标注集，独立正式规则及漏标覆盖仍需核验。"}]
+    else:
+        project["formal_rule_sources"] = [{"name":path.name, "sha256":package.digest(path.read_bytes())}
+                                          for path in args.rules]
     if args.coverage:
         coverage = review.read_data(args.coverage)
         project.update(paths=coverage["paths"], applicability=coverage.get("applicability", {}))
     documents = [("实际用于标注的合同", path, contract["name"]) for contract, path, _ in checks]
     supporting = [("原标注集", path, path.name) for path in args.annotations] + [
-        ("正式规则", path, path.name) for path in args.rules]
+        ("正式规则", path, path.name) for path in args.rules or []]
     if args.coverage:
         supporting.append(("规则覆盖清单", args.coverage, args.coverage.name))
     package.seed_project(project, review.index_records(project["contracts"], "合同"),
@@ -584,10 +698,16 @@ def main():
     collect_materials.add_argument("--annotation")
     collect_materials.add_argument("--rule")
     collect_materials.add_argument("--other-rule")
-    create = commands.add_parser("prepare", help="以已核验合同、现有标注及正式规则生成本地首包")
+    local = commands.add_parser("local-inputs", help="从用户提供的文件夹或文件识别合同和标注集，生成核验模板")
+    local.add_argument("inputs", type=Path, nargs="+", metavar="文件或文件夹")
+    local.add_argument("--type", required=True)
+    local.add_argument("--out", type=Path, required=True)
+    create = commands.add_parser("prepare", help="以已核验合同和标注生成初始 ZIP")
     create.add_argument("--type", required=True)
     create.add_argument("--type-check", type=Path, required=True)
-    create.add_argument("--materials", type=Path)
+    input_source = create.add_mutually_exclusive_group()
+    input_source.add_argument("--materials", type=Path)
+    input_source.add_argument("--local-inputs", type=Path)
     create.add_argument("--annotations", type=Path, action="append")
     create.add_argument("--rules", type=Path, action="append")
     create.add_argument("--coverage", type=Path)
@@ -624,7 +744,7 @@ def main():
         return 0
     if args.command == "fetch":
         return int(fetch(args)["status"] != "ready")
-    return {"collect":collect, "prepare":prepare, "receive":receive,
+    return {"collect":collect, "local-inputs":index_local_inputs, "prepare":prepare, "receive":receive,
             "preflight":preflight, "publish":publish}[args.command](args) or 0
 
 
