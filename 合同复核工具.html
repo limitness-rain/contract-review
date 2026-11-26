@@ -1652,7 +1652,10 @@ function lawyerPackageOverride(row) {
   return packageSession.reviewHistory.overrides.get(row.id);
 }
 function studentPackageVersion(row) {
-  if (row.student_view) return row.student_view;
+  if (row.student_view) {
+    const legacy = packageSession.reviewHistory.legacyStudentViews.get(row.id);
+    return legacy && samePackageValue(row.student_view,legacy.copy) ? legacy.prior : row.student_view;
+  }
   const initial = packageSession.reviewHistory.initial.get(row.id);
   if (row.submitted_fields) return {...(initial || row),fields:row.submitted_fields};
   if (lawyerPackageOverride(row)) return originalPackageVersion(row,initial) ?? row;
@@ -1701,27 +1704,55 @@ function packageAnnotationChanged(before,after) {
   return !!before && !!after && (packageBindingChanged(before,after) ||
     packageFieldNames.some(field=>get(before,field)!==get(after,field)));
 }
+function recordFieldInputs(inputs,id,before,after) {
+  if (!before) return;
+  const original = inputs.get(id) ?? new Map();
+  for (const field of packageFieldNames) {
+    if (!original.has(field) && get(before,field)!==get(after,field)) original.set(field,get(before,field));
+  }
+  if (original.size) inputs.set(id,original);
+}
+function recordLawyerFieldInputs(inputs,{role,action,rows}) {
+  if (role!=="lawyer" || action==="同步已保存的复核版本") return;
+  for (const {id,before,after} of rows) recordFieldInputs(inputs,id,before,after);
+}
 function indexPackageReviews({baseline,events}) {
   const initial = new Map(baseline.rows.map(row=>[row.id,row]));
   const changed = {student:new Set(),lawyer:new Set()};
   const overrides = new Map();
+  const lawyerFieldInputs = new Map();
+  const legacyStudentViews = new Map();
   for (const row of baseline.rows) {
     const original = originalPackageVersion(row,row);
     const submitted = row.student_view ?? (row.submitted_fields ? {...row,fields:row.submitted_fields} : null);
     const student = submitted ?? (baseline.stage==="student" ? row : original);
-    const lawyer = row.lawyer_view ?? (baseline.stage==="final" ? row : null);
+    const lawyer = row.lawyer_view ?? (baseline.stage!=="student" ? row : null);
     for (const role of packageRoles) {
       const judgment = latestPackageJudgment(row,role);
       const fieldsChanged = role==="student" ? packageAnnotationChanged(original,student) :
         (submitted || row.lawyer_view) && packageAnnotationChanged(student,lawyer);
       const edited = row.added_by===role || !!judgment || fieldsChanged;
       if (edited || row[role]?.modified || row[role]?.note?.trim()) changed[role].add(row.id);
-      if (role==="lawyer" && (edited || row.lawyer?.override)) overrides.set(row.id,lawyer ?? row);
+      if (role==="lawyer" && (edited || row.lawyer?.override)) {
+        overrides.set(row.id,lawyer ?? row);
+        recordFieldInputs(lawyerFieldInputs,row.id,submitted ?? original,lawyer ?? row);
+      }
     }
   }
-  for (const {role,action,rows} of events) {
+  for (const event of events) {
+    const {role,action,rows} = event;
     if (action==="同步已保存的复核版本") continue;
+    recordLawyerFieldInputs(lawyerFieldInputs,event);
     for (const {id,before,after} of rows) {
+      if (role==="student" && packageAnnotationChanged(before?.student_view,after.student_view)) {
+        // Old confirmation could snapshot the current lawyer text without editing the row.
+        if (overrides.has(id) && ["确认当前筛选的风险卡","确认所有未复核的标注","复核确认","确认删除结果"].includes(action) &&
+            !packageAnnotationChanged(before,after) && !packageAnnotationChanged(after,after.student_view)) {
+          const legacy = legacyStudentViews.get(id);
+          const prior = legacy && samePackageValue(before.student_view,legacy.copy) ? legacy.prior : before.student_view;
+          legacyStudentViews.set(id,{copy:after.student_view,prior});
+        } else legacyStudentViews.delete(id);
+      }
       const review = after[role];
       const judgment = latestPackageJudgment(after,role);
       const judged = judgment && !samePackageValue(judgment,latestPackageJudgment(before ?? {},role));
@@ -1731,7 +1762,7 @@ function indexPackageReviews({baseline,events}) {
       if (role==="lawyer" && (review?.override || edited)) overrides.set(id,after.lawyer_view ?? after);
     }
   }
-  return {initial,changed,overrides};
+  return {initial,changed,overrides,lawyerFieldInputs,legacyStudentViews};
 }
 function capturePackageChange(action) {
   if (!packageSession?.actor || model.stage==="final") return;
@@ -1771,6 +1802,7 @@ function capturePackageChange(action) {
   const event = packageEvent(action,packageSession.known,next,packageSession.events.length+1);
   if (event) {
     packageSession.events.push(event);
+    recordLawyerFieldInputs(packageSession.reviewHistory.lawyerFieldInputs,event);
     packageSession.known = next;
     dirty = true;
     const status = byId("package-save-state");
@@ -2979,15 +3011,15 @@ function updatePackageDetail(page,row,force=false) {
   const opinion = editable ? packageReviewPanel(page,row) : notePanel(row,role,false);
   body.append(opinion);
   const values = node("dl",null,"summary-grid package-fields");
-  const fieldsView = editable ? shown : view;
-  const unexpected = packageCardBlankFields(packageCardType(fieldsView.fields)).filter(field=>get(fieldsView,field).trim());
+  const unexpected = packageCardBlankFields(type).filter(field=>get(shown,field).trim());
   if (unexpected.length) body.append(node("p","按此卡片类型应留空的字段："+unexpected.join("、")+"。请核对原值。","small package-validation-problem"));
-  if (role==="student") {
-    appendReviewFields(values,row.original_fields,fieldsView,["AI 初标","实习生复核"]);
-  } else {
-    const submitted = packageRoleHasRow(row,"student") ? studentPackageVersion(row).fields : null;
-    appendReviewFields(values,submitted,fieldsView,["实习生复核","律师复核"]);
-  }
+  const {initial,lawyerFieldInputs} = packageSession.reviewHistory;
+  const original = originalPackageVersion(row,initial.get(row.id))?.fields;
+  const lawyerInput = lawyerFieldInputs.get(row.id);
+  const compare = field=>role==="student" ||
+    (lawyerInput?.has(field) && lawyerInput.get(field)!==get(shown,field)) ||
+    (page.draft && get(current,field)!==get(shown,field));
+  appendReviewFields(values,original,shown,["AI 初标",roleTitle[role]+"复核"],compare);
   body.append(node("h3",role==="student" && !row.student_view && !row.submitted_fields && !row.added_by ? "AI 初标字段" : "标注字段"),values);
   element.replaceChildren(navigation,body);
   element.scrollTop = offset;
@@ -3331,11 +3363,11 @@ function sentenceExcerpt(sentences,changes,side) {
   return paragraph;
 }
 
-function appendReviewFields(values,original,view,[beforeTitle,afterTitle]) {
+function appendReviewFields(values,original,view,[beforeTitle,afterTitle],compare) {
   original ||= {};
   for (const field of model.fields) {
     const before = asText(original[field]), after = get(view,field);
-    if (!Object.hasOwn(original,field) || before===after) {
+    if (!Object.hasOwn(original,field) || before===after || !compare(field)) {
       detailItem(values,field,after);
       continue;
     }

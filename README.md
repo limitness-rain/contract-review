@@ -43,4 +43,6 @@ Codex 会分别提供固定的「合同复核工具.html」和本批 ZIP。用 C
 
 「复核状态」可筛选两个身份的改动、确认和待复核记录。中栏和右栏各用「显示 X 条」列出当前筛选下的卡片数，旁边显示各身份的整包复核进度。两个版本共用的通用标注按一次确认计数。
 
+两种身份均可在「查看细节」中核对 AI 初标。中栏高亮实习生改动，右栏高亮律师改动，每处显示前后各两句。实习生编辑中栏，律师编辑右栏。
+
 [Skill 入口](./skills/contract-review/SKILL.md) · [流程与命令](./skills/contract-review/references/Codex工作流.md) · [标注字段与交付口径](./skills/contract-review/references/标注与导出.md)
