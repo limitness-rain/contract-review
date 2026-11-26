@@ -20,6 +20,7 @@ SOURCE_FIELDS = {"合同附件名称", "立场"}
 SHARED_FIXED_FIELDS = SOURCE_FIELDS | {"风险名称", "风险等级", "审查逻辑", "条款原文"}
 LIMIT = 200 * 1024 * 1024
 STATE_KEYS = {"stage", "review_questions", "lawyer_suggestions", "lawyer_opinion_required", "role_views", "review_related"}
+REOPEN_STAGES = {"lawyer": "student", "final": "lawyer"}
 ID = re.compile(r"[0-9a-f-]{36}")
 MEMBER = re.compile(r"(?:manifest\.json|baseline\.json|activity/[0-9a-f-]{36}\.json|sources/[0-9]+\.[a-z0-9]+)")
 
@@ -54,8 +55,24 @@ def apply_event(project, rows, event):
             project[key] = after
 
 
+def event_matches_stage(event, stage):
+    kind, role = event.get("kind"), event["role"]
+    if kind not in {"reopen", "role-switch"}:
+        return role == stage
+    valid_role = role == REOPEN_STAGES.get(stage) if kind == "reopen" else role != stage
+    changes = event["state"]
+    if not valid_role or event["rows"] != [] or not isinstance(changes, list) or len(changes) != 1:
+        return False
+    change = changes[0]
+    return (isinstance(change, dict) and change.get("key") == "stage"
+            and change.get("before") == stage and change.get("after") == event["role"])
+
+
 def is_current_removal(row):
-    return row["fields"][review.HIT] == "否" and review.latest_judgment(row.get("review_history")).get("action") == "remove"
+    history = row.get("review_history") or []
+    if (row.get("lawyer") or {}).get("override") is True:
+        history = [entry for entry in history if isinstance(entry, dict) and entry.get("stage") == "lawyer"]
+    return row["fields"][review.HIT] == "否" and review.latest_judgment(history).get("action") == "remove"
 
 
 def version_pairs(project):
@@ -69,11 +86,10 @@ def version_pairs(project):
 
 def workbook_rows(project):
     rows = project["rows"]
-    if project["stage"] != "final":
-        return rows
     paired = {contract_id for pair in version_pairs(project) for contract_id in pair["contracts"]}
-    return [row for row in rows if not row.get("replaced_by") and not (row["contract_id"] in paired
-            and (row.get("lawyer") or {}).get("reviewed") is True and is_current_removal(row))]
+    return [row for row in rows if not row.get("replaced_by") and not (is_current_removal(row) and
+            (project["stage"] != "final" or (row["contract_id"] in paired
+             and (row.get("lawyer") or {}).get("reviewed") is True)))]
 
 
 def validate_version_pair(project, initial_rows, rows):
@@ -185,7 +201,7 @@ def read_package(path):
     if sorted(histories) != list(range(1, len(histories) + 1)):
         raise ValueError("操作序号不连续")
     for _, event in sorted(histories.items()):
-        if event["role"] != project["stage"]:
+        if not event_matches_stage(event, project["stage"]):
             raise ValueError("操作角色与当时的复核阶段不一致")
         apply_event(project, rows, event)
     project["rows"] = list(rows.values())
@@ -288,8 +304,8 @@ def main():
     project = package.project
     contracts = review.index_records(project["contracts"], "合同")
     rules = review.index_records(project["rules"], "规则")
-    issues = review.validate(project, contracts, rules, final=args.command == "export" or project["stage"] == "final",
-                             review_card_types=package.manifest.get("review_card_types") is True)
+    issues = review.validate(project, contracts, rules, final=project["stage"] == "final",
+                             review_card_types=project["stage"] != "final" or package.manifest.get("review_card_types") is True)
     print(review.validation_report(project, issues))
     if any(i["blocking"] for i in issues):
         raise ValueError("复核数据存在阻塞问题")

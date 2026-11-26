@@ -16,6 +16,7 @@ const packageMember = /^(?:manifest\.json|baseline\.json|activity\/[0-9a-f-]{36}
 const packageStateKeys = ["stage","review_questions","lawyer_suggestions","lawyer_opinion_required","role_views","review_related"];
 const packageRoles = ["student","lawyer"];
 const packageStages = [...packageRoles,"final"];
+const packageReopenStages = new Map([["lawyer","student"],["final","lawyer"]]);
 const packageUuid = /^[0-9a-f-]{36}$/;
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder("utf-8",{fatal:true});
@@ -78,7 +79,8 @@ function latestPackageJudgment(row,role) {
   return row.review_history?.findLast(entry=>entry && (!role || entry.stage===role) && packageJudgmentActions.has(entry.action));
 }
 function packageCurrentRemoval(row) {
-  return row.fields["是否触发该风险"]==="否" && latestPackageJudgment(row)?.action==="remove";
+  const author = row.lawyer?.override===true ? "lawyer" : undefined;
+  return row.fields["是否触发该风险"]==="否" && latestPackageJudgment(row,author)?.action==="remove";
 }
 function packageRequiresCardReview(row) {
   const fields = packageCurrentRemoval(row) ? latestPackageJudgment(row).before : row.fields;
@@ -86,11 +88,10 @@ function packageRequiresCardReview(row) {
   return type!=="" && type!=="unrelated";
 }
 function packageWorkbookSelection(project) {
-  if (project.stage!=="final") return {rows:project.rows,removed:0,replaced:0};
   const paired = new Set(packagePairs(project).flatMap(pair=>pair.contracts));
   const active = project.rows.filter(row=>!row.replaced_by);
-  const rows = active.filter(row=>!(paired.has(row.contract_id) &&
-    row.lawyer?.reviewed===true && packageCurrentRemoval(row)));
+  const rows = active.filter(row=>!(packageCurrentRemoval(row) &&
+    (project.stage!=="final" || (paired.has(row.contract_id) && row.lawyer?.reviewed===true))));
   return {rows,removed:active.length-rows.length,replaced:project.rows.length-active.length};
 }
 
@@ -188,6 +189,14 @@ function readStoredZip(buffer) {
   return files;
 }
 
+function packageEventMatchesStage(event,stage) {
+  if (event.kind!=="reopen" && event.kind!=="role-switch") return event.role===stage;
+  const [change] = event.state;
+  const validRole = event.kind==="reopen" ? event.role===packageReopenStages.get(stage) : event.role!==stage;
+  return validRole && !event.rows.length && event.state.length===1 &&
+    change?.key==="stage" && change.before===stage && change.after===event.role;
+}
+
 function replayPackage(baseline,events) {
   const project = structuredClone(baseline);
   requirePackage(packageStages.includes(project.stage) && Array.isArray(project.rows) && project.rows.length &&
@@ -201,9 +210,10 @@ function replayPackage(baseline,events) {
   requirePackage(rows.size===project.rows.length && project.rows.every(row=>typeof row.id==="string" && row.fields),"基线含重复或无效的标注 ID。");
   const ids = new Set();
   for (const [index,event] of events.entries()) {
-    requirePackage(event.seq===index+1 && packageUuid.test(event.id) && !ids.has(event.id) && event.role===project.stage &&
+    requirePackage(event.seq===index+1 && packageUuid.test(event.id) && !ids.has(event.id) &&
       packageRoles.includes(event.role) && typeof event.actor==="string" && event.actor.trim() &&
-      Array.isArray(event.rows) && Array.isArray(event.state),"操作编号、顺序或复核角色无效。");
+      Array.isArray(event.rows) && Array.isArray(event.state) && packageEventMatchesStage(event,project.stage),
+      "操作编号、顺序或复核角色无效。");
     ids.add(event.id);
     for (const {id,before,after} of event.rows) {
       requirePackage(samePackageValue(rows.get(id),before) && after?.id===id && after.fields,"操作中的标注原值不匹配："+id);

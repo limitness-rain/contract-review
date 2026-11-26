@@ -40,10 +40,11 @@ body:has(.package-start) { min-height:100vh; background:radial-gradient(ellipse 
 .package-start-filename { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--soft); font-size:13px; }
 .package-start-preview { display:grid; gap:2px; padding:8px 11px; border-radius:7px; background:#edf5ee; overflow-wrap:anywhere; }
 .package-start-field { display:grid; gap:5px; }
-.package-start-field input { width:100%; padding:8px 11px; }
+.package-start-field input,.package-start-field select { width:100%; padding:8px 11px; }
 .package-start-form > .primary { margin-top:2px; justify-self:stretch; }
 .package-start-status { color:#852d34; overflow-wrap:anywhere; white-space:pre-line; }
 .package-start-status:empty { display:none; }
+.package-review-progress { padding:4px 9px; border-radius:6px; background:#e4efe6; color:#194b37; font-size:15px; font-weight:700; white-space:nowrap; font-variant-numeric:tabular-nums; }
 .package-card-summary { grid-template-columns:minmax(0,32%) minmax(0,1fr); font-size:13px; }
 .package-card-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; margin-left:auto; }
 .badge.package-related-clear { color:#195b64; background:#e2f3f2; }
@@ -72,7 +73,7 @@ body:has(.package-start) { min-height:100vh; background:radial-gradient(ellipse 
 .package-view .toolbar #search { width:min(155px,55vw); }
 .package-view .pane-heading { min-height:36px; padding:4px 8px; }
 .package-view .pane-heading h2 { font-size:14px; }
-.package-view .pane-heading .toolbar-line { gap:4px; }
+.package-view .pane-heading .toolbar-line { gap:7px; flex-wrap:nowrap; margin-inline-start:auto; }
 .package-view .pane-heading .small { font-size:11px; white-space:nowrap; }
 .package-view .study { padding:7px; }
 .package-menu { position:relative; }
@@ -246,6 +247,7 @@ const packageMember = /^(?:manifest\.json|baseline\.json|activity\/[0-9a-f-]{36}
 const packageStateKeys = ["stage","review_questions","lawyer_suggestions","lawyer_opinion_required","role_views","review_related"];
 const packageRoles = ["student","lawyer"];
 const packageStages = [...packageRoles,"final"];
+const packageReopenStages = new Map([["lawyer","student"],["final","lawyer"]]);
 const packageUuid = /^[0-9a-f-]{36}$/;
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder("utf-8",{fatal:true});
@@ -308,7 +310,8 @@ function latestPackageJudgment(row,role) {
   return row.review_history?.findLast(entry=>entry && (!role || entry.stage===role) && packageJudgmentActions.has(entry.action));
 }
 function packageCurrentRemoval(row) {
-  return row.fields["是否触发该风险"]==="否" && latestPackageJudgment(row)?.action==="remove";
+  const author = row.lawyer?.override===true ? "lawyer" : undefined;
+  return row.fields["是否触发该风险"]==="否" && latestPackageJudgment(row,author)?.action==="remove";
 }
 function packageRequiresCardReview(row) {
   const fields = packageCurrentRemoval(row) ? latestPackageJudgment(row).before : row.fields;
@@ -316,11 +319,10 @@ function packageRequiresCardReview(row) {
   return type!=="" && type!=="unrelated";
 }
 function packageWorkbookSelection(project) {
-  if (project.stage!=="final") return {rows:project.rows,removed:0,replaced:0};
   const paired = new Set(packagePairs(project).flatMap(pair=>pair.contracts));
   const active = project.rows.filter(row=>!row.replaced_by);
-  const rows = active.filter(row=>!(paired.has(row.contract_id) &&
-    row.lawyer?.reviewed===true && packageCurrentRemoval(row)));
+  const rows = active.filter(row=>!(packageCurrentRemoval(row) &&
+    (project.stage!=="final" || (paired.has(row.contract_id) && row.lawyer?.reviewed===true))));
   return {rows,removed:active.length-rows.length,replaced:project.rows.length-active.length};
 }
 
@@ -418,6 +420,14 @@ function readStoredZip(buffer) {
   return files;
 }
 
+function packageEventMatchesStage(event,stage) {
+  if (event.kind!=="reopen" && event.kind!=="role-switch") return event.role===stage;
+  const [change] = event.state;
+  const validRole = event.kind==="reopen" ? event.role===packageReopenStages.get(stage) : event.role!==stage;
+  return validRole && !event.rows.length && event.state.length===1 &&
+    change?.key==="stage" && change.before===stage && change.after===event.role;
+}
+
 function replayPackage(baseline,events) {
   const project = structuredClone(baseline);
   requirePackage(packageStages.includes(project.stage) && Array.isArray(project.rows) && project.rows.length &&
@@ -431,9 +441,10 @@ function replayPackage(baseline,events) {
   requirePackage(rows.size===project.rows.length && project.rows.every(row=>typeof row.id==="string" && row.fields),"基线含重复或无效的标注 ID。");
   const ids = new Set();
   for (const [index,event] of events.entries()) {
-    requirePackage(event.seq===index+1 && packageUuid.test(event.id) && !ids.has(event.id) && event.role===project.stage &&
+    requirePackage(event.seq===index+1 && packageUuid.test(event.id) && !ids.has(event.id) &&
       packageRoles.includes(event.role) && typeof event.actor==="string" && event.actor.trim() &&
-      Array.isArray(event.rows) && Array.isArray(event.state),"操作编号、顺序或复核角色无效。");
+      Array.isArray(event.rows) && Array.isArray(event.state) && packageEventMatchesStage(event,project.stage),
+      "操作编号、顺序或复核角色无效。");
     ids.add(event.id);
     for (const {id,before,after} of event.rows) {
       requirePackage(samePackageValue(rows.get(id),before) && after?.id===id && after.fields,"操作中的标注原值不匹配："+id);
@@ -1252,6 +1263,12 @@ let packageVersionBase, packageSectionSlots = new Map(), packageSharedRows = new
 let packageSectionsByContract = new Map();
 let packageCardTones = new Map();
 const roleTitle = {student:"实习生",lawyer:"律师"};
+const packageOpenLabels = {student:"法律工程师（实习生）",lawyer:"律师"};
+const packageReviewFilters = [
+  ["","全部状态"],["student-changed","实习生有改动"],["student-confirmed","实习生仅确认"],
+  ["student-pending","实习生未复核"],["lawyer-changed","律师有改动"],
+  ["lawyer-approved","律师仅批准"],["lawyer-pending","律师未复核"]
+];
 const packageSide = {student:"right",lawyer:"lawyer-pane"};
 
 function acceptPackageVersion(incoming) {
@@ -1260,11 +1277,57 @@ function acceptPackageVersion(incoming) {
   return !previous || previous.package_id===next.package_id || next.parents.includes(previous.package_id)
     || window.confirm("这个包可能是旧版本或另一条交接分支。请核对文件来源。仍要打开吗？");
 }
-function actorForPackage(incoming,name) {
-  const role = incoming.project.stage;
-  if (role==="final") return null;
+function actorForPackage(incoming,name,role) {
   const prior = incoming.events.findLast(event=>event.actor===name && event.role===role);
   return {id:prior?.actor_id || crypto.randomUUID(),name};
+}
+function packageOpenFields(change) {
+  const mode = node("select");
+  mode.setAttribute("aria-label","复核身份");
+  const modeField = labelled("复核身份",mode,"package-start-field");
+  modeField.hidden = true;
+  const name = node("input");
+  name.type = "text";
+  name.autocomplete = "name";
+  name.maxLength = 80;
+  name.placeholder = "填写本轮复核署名";
+  const identity = labelled("姓名或工作代号",name,"package-start-field");
+  let incoming;
+  mode.onchange = ()=>{
+    if (incoming && mode.value && !name.value.trim()) {
+      const handoff = incoming.manifest.handoff;
+      name.value = handoff?.role===mode.value ? handoff.actor || "" :
+        incoming.events.findLast(event=>event.role===mode.value)?.actor || "";
+    }
+    change();
+  };
+  name.oninput = change;
+  function set(candidate) {
+    incoming = candidate;
+    mode.replaceChildren();
+    option(mode,"","请选择复核身份");
+    for (const role of packageRoles) option(mode,role,packageOpenLabels[role]);
+    modeField.hidden = !candidate;
+    change();
+  }
+  return {mode,modeField,name,identity,set};
+}
+
+function openImportedPackage(incoming,stage,name) {
+  requirePackage(packageRoles.includes(stage) && name,"请选择复核身份并填写姓名或工作代号。");
+  const actor = actorForPackage(incoming,name,stage);
+  const from = incoming.project.stage;
+  if (stage===from) {
+    mountPackage(incoming,actor);
+    return;
+  }
+  const event = {
+    id:crypto.randomUUID(),seq:incoming.events.length+1,actor_id:actor.id,actor:actor.name,role:stage,
+    round:incoming.manifest.round,at:new Date().toISOString(),action:"以"+roleTitle[stage]+"身份打开",
+    kind:"role-switch",rows:[],state:[{key:"stage",before:from,after:stage}]
+  };
+  const workspace = {...incoming,project:{...incoming.project,stage},events:[...incoming.events,event]};
+  mountPackage(workspace,actor,true);
 }
 function confirmPackageWarnings(warnings,sources,action) {
   const title = "标注字段有空值";
@@ -1329,11 +1392,7 @@ function packageFileControl() {
       const incoming = await loadReviewPackage(file);
       if (!acceptPackageVersion(incoming)) return setNotice("已保留当前工作。");
       if (!await confirmPackageImport(incoming)) return setNotice("导入已取消，保留当前工作。");
-      if (incoming.project.stage==="final") {
-        mountPackage(incoming,null);
-      } else {
-        identifyPackageActor(incoming);
-      }
+      choosePackageWorkspace(incoming);
     } catch (error) {
       setNotice("导入失败。"+error.message);
     } finally {
@@ -1429,12 +1488,8 @@ function bootPackage(message="导入已有 ZIP，或用合同和 AI 标注集生
   const zipLabel = node("span","复核数据包","package-start-label");
   const preview = node("div",null,"package-start-preview");
   preview.hidden = true;
-  const name = node("input");
-  name.type = "text";
-  name.autocomplete = "name";
-  name.maxLength = 80;
-  name.placeholder = "填写本轮复核署名";
-  const identity = labelled("姓名或工作代号",name,"package-start-field");
+  const fields = packageOpenFields(updateOpen);
+  const {mode,modeField,name,identity} = fields;
   const status = node("p","","package-start-status");
   status.id = "message";
   status.setAttribute("role","status");
@@ -1445,14 +1500,13 @@ function bootPackage(message="导入已有 ZIP，或用合同和 AI 标注集生
   let confirmedDuringBuild = false;
   let importAttempt = 0;
   function updateOpen() {
-    open.disabled = !incoming || (incoming.project.stage!=="final" && !name.value.trim());
+    open.disabled = !incoming || !mode.value || !name.value.trim();
   }
-  name.oninput = updateOpen;
   async function inspect(file,alreadyConfirmed=false) {
     const attempt = ++importAttempt;
     incoming = null;
     preview.hidden = true;
-    identity.hidden = false;
+    fields.set(null);
     fileName.textContent = file.name;
     fileName.title = file.name;
     status.textContent = "正在校验数据包…";
@@ -1466,9 +1520,8 @@ function bootPackage(message="导入已有 ZIP，或用合同和 AI 标注集生
       preview.replaceChildren(node("strong",loaded.project.title || "合同复核"),
         node("span",stageNames[stage]+" · 第 "+round+" 轮 · 包版本 "+revision,"small"));
       preview.hidden = false;
-      identity.hidden = stage==="final";
+      fields.set(loaded);
       status.textContent = "";
-      updateOpen();
     } catch (error) {
       if (attempt===importAttempt) status.textContent = "导入失败。"+error.message;
     }
@@ -1489,9 +1542,9 @@ function bootPackage(message="导入已有 ZIP，或用合同和 AI 标注集生
       updateOpen();
       if (!confirmed) return;
     }
-    mountPackage(candidate,actorForPackage(candidate,name.value.trim()));
+    openImportedPackage(candidate,mode.value,name.value.trim());
   };
-  form.append(zipLabel,fileRow,preview,identity,status,open);
+  form.append(zipLabel,fileRow,preview,modeField,identity,status,open);
   const create = initialPackageForm(file=>{
     showCreate(false);
     inspect(file,true);
@@ -1516,30 +1569,29 @@ function bootPackage(message="导入已有 ZIP，或用合同和 AI 标注集生
   root.replaceChildren(start);
 }
 
-function identifyPackageActor(incoming) {
-  const dialog = dialogBox("确认本轮操作者");
-  const name = node("input");
-  name.type = "text";
-  name.maxLength = 80;
-  const role = incoming.project.stage;
-  const error = node("p","","small");
-  dialog.append(node("p","当前阶段为"+roleTitle[role]+"复核。请输入姓名或工作代号。"),labelled("姓名或工作代号",name),error,
-    button("打开复核工作台",()=>{
-      const actor = name.value.trim();
-      if (!actor) { error.textContent = "请先填写操作者。"; return name.focus(); }
-      dialog.close();
-      mountPackage(incoming,actorForPackage(incoming,actor));
-    },"primary"));
+function choosePackageWorkspace(incoming) {
+  const dialog = dialogBox("确认打开方式");
+  dialog.setAttribute("aria-label","确认打开方式");
+  const open = button("打开复核工作台",()=>{
+    opened = true;
+    dialog.close();
+    openImportedPackage(incoming,mode.value,name.value.trim());
+  },"primary");
+  const fields = packageOpenFields(()=>{ open.disabled = !mode.value || !name.value.trim(); });
+  const {mode,modeField,name,identity} = fields;
+  let opened = false;
+  fields.set(incoming);
+  dialog.append(node("p",stageNames[incoming.project.stage]+" · "+(incoming.project.title || "合同复核")),
+    modeField,identity,open);
   dialog.addEventListener("close",()=>{
-    if (packageSession!==incoming) setNotice("导入已取消，保留当前工作。");
+    if (!opened) setNotice("导入已取消，保留当前工作。");
   });
-  name.focus();
+  (modeField.hidden ? name : mode).focus();
 }
 
-function mountPackage(session,actor) {
+function mountPackage(session,actor,reopened=false) {
   packageSession = session;
   session.actor = actor;
-  session.handoffChanges = indexHandoffChanges(session.events);
   seenPackageHeads.set(session.manifest.baseline_sha256,session.manifest);
   model = session.project;
   packageVersionBase = undefined;
@@ -1549,23 +1601,23 @@ function mountPackage(session,actor) {
   packageSharedRows = new Map(shared.flatMap(([a,b])=>[[a,b],[b,a]]));
   packageSharedPrimary = new Set(shared.map(([a])=>a));
   packageVersionChoices.clear();
-  const changedRows = model.stage==="final" ? session.baseline.rows.filter(row=>baselineLawyerChange(row,session.baseline.stage)) :
-    model.rows.filter(row=>row.added_by || row.review_history?.length ||
-    packageRoles.some(role=>row[role]?.note?.trim()) ||
-    (row.original_fields && model.fields.some(field=>get(row,field)!==asText(row.original_fields[field]))));
-  session.changedRows = new Set(changedRows.map(row=>row.id));
-  for (const event of session.events) trackPackageChanges(event);
+  session.reviewHistory = indexPackageReviews(session);
   bindModel();
   contractId = packagePairByContract.get(contractId)?.contracts[0] || contractId;
   selected = activeSectionId = openEditor = pendingSide = "";
   linked = true;
   lastUserSide = "left";
   packageDetailPages.clear();
-  dirty = false;
+  dirty = reopened;
   root.replaceChildren();
   launch();
   session.known = snapshotPackageChanges();
-  setNotice("已打开 ZIP。修改后可随时导出当前进度。");
+  if (reopened) {
+    byId("package-save-state").textContent = "有修改待导出";
+    setNotice("已按"+roleTitle[model.stage]+"身份打开。可随时导出当前进度。");
+  } else {
+    setNotice("已打开 ZIP。可随时导出当前进度。");
+  }
 }
 
 function snapshotPackageChanges(project=model) {
@@ -1575,10 +1627,13 @@ function snapshotPackageChanges(project=model) {
   };
 }
 function packageRecordVersion(row) {
-  return structuredClone({
+  return structuredClone(packageRecordFields(row));
+}
+function packageRecordFields(row) {
+  return {
     fields:row.fields,contract_id:row.contract_id,rule_id:row.rule_id,
     scope:row.scope,section_id:row.section_id,matter_id:row.matter_id
-  });
+  };
 }
 function packageHasReplacementBinding(row) {
   return !!row.added_by && (packageDetailPages.get(model.stage)?.newCard?.row.id===row.id ||
@@ -1588,24 +1643,41 @@ function fixedPackageBindingFields(row) {
   if (packageSharedRows.has(row.id) || packageHasReplacementBinding(row)) return packageBoundFields;
   return packagePairByContract.has(row.contract_id) ? packageSourceFields : [];
 }
-function invalidatePackageReview(row,before) {
-  if (samePackageValue(packageRecordVersion(row),packageRecordVersion(before))) return;
-  const role = model.stage;
-  const other = role==="student" ? "lawyer" : "student";
-  if (other==="student" || packageSession.manifest.round>1 || before[other] || before[other+"_view"]) {
-    row[other+"_view"] ||= roleProjection(before,other);
-  }
-  row[role+"_view"] = packageRecordVersion(row);
-  if (role==="student" && row.lawyer?.reviewed) row.lawyer.reviewed = false;
-  if (role==="lawyer" && !before.student?.reviewed && !requiresReview(before)) row.lawyer_review_only = true;
+function originalPackageVersion(row,initial) {
+  const fields = row.original_fields ?? initial?.original_fields ?? initial?.fields;
+  return fields && Object.keys(fields).length ? {...(initial || row),fields} : null;
+}
+function lawyerPackageOverride(row) {
+  if (row.lawyer?.override===true) return row.lawyer_view ?? row;
+  return packageSession.reviewHistory.overrides.get(row.id);
+}
+function studentPackageVersion(row) {
+  if (row.student_view) return row.student_view;
+  const initial = packageSession.reviewHistory.initial.get(row.id);
+  if (row.submitted_fields) return {...(initial || row),fields:row.submitted_fields};
+  if (lawyerPackageOverride(row)) return originalPackageVersion(row,initial) ?? row;
+  return row;
 }
 function roleProjection(row,role) {
-  if (role==="lawyer" && model.stage==="lawyer" && packageCurrentRemoval(row)) return packageRecordVersion(row);
-  const stored = row[role+"_view"];
-  if (stored) return stored;
-  const version = packageRecordVersion(row);
-  if (role==="student" && row.submitted_fields) version.fields = structuredClone(row.submitted_fields);
-  return version;
+  const version = role==="lawyer" ? lawyerPackageOverride(row) ?? studentPackageVersion(row) : studentPackageVersion(row);
+  return packageRecordFields(version);
+}
+function packageRoleRow(row,role) {
+  return {...row,...roleProjection(row,role)};
+}
+function usePackageRecord(row,version) {
+  for (const [key,value] of Object.entries(packageRecordVersion(version))) {
+    if (value===undefined) delete row[key];
+    else row[key] = value;
+  }
+}
+function syncEffectivePackageRow(row) {
+  const override = lawyerPackageOverride(row);
+  if (override) {
+    if (row.lawyer?.override!==true || !row.lawyer_view) row.lawyer_view = packageRecordVersion(override);
+    reviewData(row,"lawyer").override = true;
+  }
+  usePackageRecord(row,override ?? studentPackageVersion(row));
 }
 function packageEvent(action,before,next,seq) {
   const {id,name} = packageSession.actor;
@@ -1625,28 +1697,46 @@ function packageEvent(action,before,next,seq) {
 const packageBindingChanged = (before,after)=>["contract_id","rule_id","scope","section_id","matter_id"]
   .some(key=>before?.[key]!==after[key]);
 
-function baselineLawyerChange(row,stage) {
-  if (row.added_by==="lawyer" || row.lawyer?.note?.trim() ||
-      row.review_history?.some(entry=>entry?.stage==="lawyer" && packageJudgmentActions.has(entry.action))) return true;
-  const submitted = row.student_view?.fields ?? row.submitted_fields;
-  const reviewed = row.lawyer_view ?? (stage==="final" ? row : null);
-  return !!submitted && !!reviewed && (model.fields.some(field=>get(reviewed,field)!==asText(submitted[field])) ||
-    (!!row.student_view && packageBindingChanged(row.student_view,reviewed)));
+function packageAnnotationChanged(before,after) {
+  return !!before && !!after && (packageBindingChanged(before,after) ||
+    packageFieldNames.some(field=>get(before,field)!==get(after,field)));
 }
-function trackPackageChanges(event) {
-  const final = model.stage==="final";
-  if (final && event.role!=="lawyer") return;
-  const noteRoles = final ? ["lawyer"] : packageRoles;
-  const changedRows = packageSession.changedRows;
-  for (const {id,before,after} of event.rows) {
-    if (changedRows.has(id)) continue;
-    if (!before || !samePackageValue(before.fields,after.fields) || packageBindingChanged(before,after) ||
-        !samePackageValue(before.review_history,after.review_history) ||
-        noteRoles.some(role=>asText(before[role]?.note)!==asText(after[role]?.note))) changedRows.add(id);
+function indexPackageReviews({baseline,events}) {
+  const initial = new Map(baseline.rows.map(row=>[row.id,row]));
+  const changed = {student:new Set(),lawyer:new Set()};
+  const overrides = new Map();
+  for (const row of baseline.rows) {
+    const original = originalPackageVersion(row,row);
+    const submitted = row.student_view ?? (row.submitted_fields ? {...row,fields:row.submitted_fields} : null);
+    const student = submitted ?? (baseline.stage==="student" ? row : original);
+    const lawyer = row.lawyer_view ?? (baseline.stage==="final" ? row : null);
+    for (const role of packageRoles) {
+      const judgment = latestPackageJudgment(row,role);
+      const fieldsChanged = role==="student" ? packageAnnotationChanged(original,student) :
+        (submitted || row.lawyer_view) && packageAnnotationChanged(student,lawyer);
+      const edited = row.added_by===role || !!judgment || fieldsChanged;
+      if (edited || row[role]?.modified || row[role]?.note?.trim()) changed[role].add(row.id);
+      if (role==="lawyer" && (edited || row.lawyer?.override)) overrides.set(row.id,lawyer ?? row);
+    }
   }
+  for (const {role,action,rows} of events) {
+    if (action==="同步已保存的复核版本") continue;
+    for (const {id,before,after} of rows) {
+      const review = after[role];
+      const judgment = latestPackageJudgment(after,role);
+      const judged = judgment && !samePackageValue(judgment,latestPackageJudgment(before ?? {},role));
+      const added = !before && after.added_by===role;
+      const edited = review?.modified==null && (added || judged || packageAnnotationChanged(before,after));
+      if (review?.modified || edited || asText(before?.[role]?.note)!==asText(review?.note)) changed[role].add(id);
+      if (role==="lawyer" && (review?.override || edited)) overrides.set(id,after.lawyer_view ?? after);
+    }
+  }
+  return {initial,changed,overrides};
 }
 function capturePackageChange(action) {
   if (!packageSession?.actor || model.stage==="final") return;
+  const role = model.stage;
+  const other = oppositePackageRole(role);
   for (const a of packageSharedPrimary) {
     const b = packageSharedRows.get(a);
     const left = rowById.get(a), right = rowById.get(b);
@@ -1656,34 +1746,44 @@ function capturePackageChange(action) {
     if (changedLeft===changedRight) continue;
     const [source,target] = changedLeft ? [left,right] : [right,left];
     const sourceBefore = previous.get(source.id), targetBefore = previous.get(target.id);
-    for (const field of packageFieldNames) {
-      if (!packageBoundFields.includes(field)) target.fields[field] = source.fields[field];
+    const priorView = roleProjection(target,role);
+    if (source[role+"_view"]) {
+      const version = packageRecordVersion(priorView);
+      for (const field of packageFieldNames) {
+        if (!packageBoundFields.includes(field)) version.fields[field] = source[role+"_view"].fields[field];
+      }
+      target[role+"_view"] = version;
     }
     for (const event of (source.review_history || []).slice(sourceBefore.review_history?.length || 0)) {
-      (target.review_history ||= []).push({...event,before:{...targetBefore.fields}});
+      (target.review_history ||= []).push({...event,before:{...priorView.fields}});
     }
     if (source.review_required) target.review_required = true;
-    invalidatePackageReview(target,targetBefore);
-    if (source[model.stage]) target[model.stage] = structuredClone(source[model.stage]);
+    if (role==="lawyer" && source.lawyer?.override) target.student_view ||= packageRecordVersion(roleProjection(targetBefore,"student"));
+    if (source[role]) target[role] = structuredClone(source[role]);
+    if (!samePackageValue(source[other],sourceBefore[other]) && source[other]) target[other] = structuredClone(source[other]);
+    syncEffectivePackageRow(target);
   }
   for (const row of model.rows) {
-    const wasReviewed = packageSession.known.rows.get(row.id)?.[model.stage]?.reviewed;
-    if (row[model.stage]?.reviewed && !wasReviewed) row[model.stage+"_view"] = packageRecordVersion(row);
+    const wasReviewed = packageSession.known.rows.get(row.id)?.[role]?.reviewed;
+    if (row[role]?.reviewed && !wasReviewed) row[role+"_view"] ||= packageRecordVersion(roleProjection(row,role));
   }
   const next = snapshotPackageChanges();
   const event = packageEvent(action,packageSession.known,next,packageSession.events.length+1);
   if (event) {
     packageSession.events.push(event);
-    trackPackageChanges(event);
     packageSession.known = next;
     dirty = true;
     const status = byId("package-save-state");
     if (status) status.textContent = "有修改待导出";
   }
 }
-function packageReviewRows() {
-  return model.rows.filter(row=>requiresReview(row) &&
-    (!packageSharedRows.has(row.id) || packageSharedPrimary.has(row.id)));
+function packageReviewRows(role=model.stage) {
+  return model.rows.filter(row=>{
+    if (row.replaced_by || !packageRoleHasRow(row,role) ||
+        (packageSharedRows.has(row.id) && !packageSharedPrimary.has(row.id))) return false;
+    const type = packageListType(row,role);
+    return row[role]?.reviewed || (type && type!=="unrelated");
+  });
 }
 function safeName(name) {
   return name.replace(/[<>:"/\\|?*\x00-\x1f]/g,"_");
@@ -1780,19 +1880,14 @@ function packageMenu(label,items) {
 }
 function packageHeader(actions) {
   actions.append(packageFileControl(),
-    button("问题与律师建议",showPackageDiscussion),
+    button("问题与建议",showPackageDiscussion),
     packageMenu("更多",[
       button("材料与来源",showPackageSources),
       button("复核记录",showLogs),
       button("预埋记录与检查报告",report)
-    ]));
-  if (model.stage==="final") {
-    actions.append(button("导出标注集 Excel",exportPackageWorkbook,"primary"));
-    return;
-  }
-  actions.append(button("导出当前进度",()=>savePackage(model.stage)));
-  if (model.stage==="student") actions.append(button("提交给律师",()=>savePackage("lawyer"),"primary"));
-  else actions.append(button("导出律师终版 ZIP",()=>savePackage("final"),"primary"));
+    ]),
+    button("导出标注集 Excel",exportPackageWorkbook),
+    button("导出当前进度 ZIP",savePackage,"primary"));
 }
 function showPackageSources() {
   const dialog = dialogBox("材料与来源");
@@ -1809,9 +1904,12 @@ function showPackageSources() {
 }
 function showPackageDiscussion() {
   if (openEditor) return setNotice("请先应用或取消当前编辑。");
-  const dialog = dialogBox("问题与律师建议");
-  if (model.stage==="student") dialog.append(button("提出合同问题",()=>{dialog.close();editDiscussion("question");}));
-  if (model.stage==="lawyer") dialog.append(button("新建建议",()=>{dialog.close();editDiscussion("suggestion");}));
+  const dialog = dialogBox("问题与建议");
+  dialog.setAttribute("aria-label","问题与建议");
+  const actions = node("div",null,"row-actions");
+  actions.append(button("添加问题",()=>{dialog.close();editDiscussion("question");}),
+    button("添加建议",()=>{dialog.close();editDiscussion("suggestion");}));
+  dialog.append(actions);
   appendDiscussion(dialog,model.stage==="lawyer");
 }
 function appendPackageLog(dialog) {
@@ -1824,8 +1922,11 @@ function appendPackageLog(dialog) {
       if (!entry.open || entry.children.length>1) return;
       for (const change of event.rows) {
         entry.append(node("strong",[change.id,...packageSourceFields.map(field=>change.after.fields[field])].filter(Boolean).join(" · ")));
+        const view = event.role+"_view";
+        const prior = change.before?.[view]?.fields ?? change.before?.fields;
+        const current = change.after[view]?.fields ?? change.after.fields;
         for (const key of model.fields) {
-          const before = change.before?.fields?.[key],after = change.after.fields?.[key];
+          const before = prior?.[key],after = current[key];
           if (before!==after) entry.append(node("p",key+"\n原值　"+(before||"（空）")+"\n改后　"+(after||"（空）"),"wrap small"));
         }
         for (const role of packageRoles) {
@@ -1842,67 +1943,33 @@ function appendPackageLog(dialog) {
   }
   dialog.append(log);
 }
-async function savePackage(nextStage) {
+async function savePackage() {
   if (packageBusy || !packageSession?.actor) return;
-  if (openEditor) return setNotice("请先应用或取消当前编辑。");
-  if (packageHasDetailDraft()) return setNotice("请先确认当前卡片，或退出详情放弃未确认的改动，再导出 ZIP。");
-  const handoff = nextStage!==model.stage;
-  const action = nextStage==="final" ? "保存律师终版" : handoff ? "提交给律师" : "导出当前进度";
-  if (handoff && nextStage==="lawyer") {
-    const pending = packageReviewRows().filter(row=>!isReviewed(row));
-    if (pending.length) {
-      const dialog = dialogBox("还有标注待确认");
-      dialog.setAttribute("aria-label","还有标注待确认");
-      dialog.append(node("p","前四类中还有 "+pending.length+" 张卡片待确认。确认后可提交给律师，也可以先导出当前进度。"));
-      if (pending.some(packageCurrentRemoval)) dialog.append(node("p","删除事项请在「更多」→「复核记录」中确认。"));
-      return;
-    }
-  }
-  if (nextStage==="final") {
-    const failures = finalPackageIssues(model,false);
-    if (failures.length) return showPackageFailures(failures);
-  }
-  const student = model.stage==="student";
-  const contractName = model.title;
-  const stage = student ? "实习生初审" : "律师复核";
-  const nextStep = handoff ? (student ? "交律师" : "交实习生验收") : (student ? "继续初审" : "继续复核");
+  const hasDraft = openEditor || packageHasDetailDraft();
   packageBusy = true;
   try {
-    const filename = await choosePackageFilename(packageExportName(contractName,packageSession.actor.name,stage,nextStep),".zip");
+    const filename = await choosePackageFilename(packageExportName(model.title,packageSession.actor.name,
+      roleTitle[model.stage],"当前进度"),".zip");
     if (!filename) return;
     root.inert = true;
     capturePackageChange("保存本轮修改");
+    for (const row of model.rows) syncEffectivePackageRow(row);
+    capturePackageChange("同步已保存的复核版本");
     setNotice("正在生成 ZIP…");
     const prior = packageSession.manifest;
-    const target = structuredClone(model);
-    target.stage = nextStage;
-    if (nextStage==="final") {
-      target.lawyer_opinion_required = false;
-      target.review_related = true;
-    }
-    const next = snapshotPackageChanges(target);
-    const event = handoff ? packageEvent(action,packageSession.known,next,packageSession.events.length+1) : null;
-    const events = event ? [...packageSession.events,event] : [...packageSession.events];
     const manifest = {
       ...prior,package_id:crypto.randomUUID(),parents:[prior.package_id],revision:prior.revision+1,
-      stage:nextStage,
-      handoff:handoff ? {action,actor:packageSession.actor.name,role:model.stage,at:new Date().toISOString()} : prior.handoff
+      stage:model.stage,export_kind:"progress",review_card_types:true
     };
-    if (nextStage==="final") manifest.review_card_types = true;
-    if (packagePairs(target).length) validatePackageVersionPair(packageSession.baseline,target);
-    const zip = await exportReviewPackage(packageSession,manifest,events);
+    if (packagePairs(model).length) validatePackageVersionPair(packageSession.baseline,model);
+    const zip = await exportReviewPackage(packageSession,manifest,packageSession.events);
     downloadPackageFile(zip,filename);
     seenPackageHeads.set(manifest.baseline_sha256,manifest);
     dirty = false;
-    if (handoff) {
-      packageSession = null;
-      bootPackage("已发起下载「"+action+"」ZIP。交接时发送这份文件。");
-    } else {
-      packageSession.manifest = manifest;
-      byId("package-version").textContent = "第 "+manifest.round+" 轮 · 包版本 "+manifest.revision+" · "+manifest.package_id.slice(0,8);
-      byId("package-save-state").textContent = "无待导出的修改";
-      setNotice("已发起下载当前进度 ZIP。");
-    }
+    packageSession.manifest = manifest;
+    byId("package-version").textContent = "第 "+manifest.round+" 轮 · 包版本 "+manifest.revision+" · "+manifest.package_id.slice(0,8);
+    byId("package-save-state").textContent = "无待导出的已确认修改";
+    setNotice("已发起下载当前进度 ZIP。"+(hasDraft ? "当前未确认的编辑仍留在网页。" : ""));
   } catch (error) {
     setNotice("导出失败，当前修改仍保留。"+error.message);
   } finally {
@@ -1973,30 +2040,32 @@ function clauseDifference(actual,expected) {
 function locatePackageIssue(issue,dialog,{restore,field,editBinding,rowId=issue.rowId}={}) {
   const row = rowById.get(rowId);
   if (openEditor) return;
+  const role = row && (lawyerPackageOverride(row) || !packageRoleHasRow(row,model.stage)) ? "lawyer" : model.stage;
+  const version = row && packageRoleRow(row,role);
   if (restore) {
-    if (model.stage!=="lawyer" || !row || fixedPackageBindingFields(row).includes(keyClause) ||
-        !restore.canRestore || row.section_id!==restore.section.id) return;
+    if (model.stage!==role || !row || fixedPackageBindingFields(row).includes(keyClause) ||
+        !restore.canRestore || version.section_id!==restore.section.id) return;
   }
   dialog.close();
-  const contract = row?.contract_id ?? issue.contractId;
-  const section = rowId===issue.rowId || !row ? issue.section?.id : row.section_id;
+  const contract = version?.contract_id ?? issue.contractId;
+  const section = rowId===issue.rowId || !version ? issue.section?.id : version.section_id;
   resetRiskFilters(contract);
-  if (row && packageListType(row,"lawyer")==="unrelated") {
+  if (row && packageListType(row,role)==="unrelated") {
     const scope = byId("scope");
     scope.value = scope.dataset.past = "unrelated";
   }
-  revealPackageRowVersion(row || {contract_id:contract},section);
+  revealPackageRowVersion(version || {contract_id:contract},section);
   render();
   if (row) {
-    openPackageDetail(row,"lawyer");
-    focusPackageRow(row.id,false,"lawyer");
-    const detail = packageDetailPages.get("lawyer");
+    openPackageDetail(row,role);
+    focusPackageRow(row.id,false,role);
+    const detail = packageDetailPages.get(role);
     if (restore && detail?.rowId===row.id) {
-      detail.draft ||= structuredClone(row);
+      detail.draft ||= structuredClone(version);
       detail.draft.fields[keyClause] = restore.section.text;
       updatePackageDetail(detail,row,true);
     }
-    if ((field || editBinding) && model.stage==="lawyer") {
+    if ((field || editBinding) && model.stage===role) {
       const page = detail?.element;
       if (!page) return;
       const edit = page.querySelector(".package-field-toggle");
@@ -2022,17 +2091,18 @@ function locatePackageIssue(issue,dialog,{restore,field,editBinding,rowId=issue.
 }
 
 function showPackageFailures(issues) {
-  const dialog = dialogBox("终版校验未通过");
-  dialog.setAttribute("aria-label","终版校验未通过");
+  const dialog = dialogBox("标注集导出校验未通过");
+  dialog.setAttribute("aria-label","标注集导出校验未通过");
   dialog.append(node("p","有 "+issues.length+" 项待处理。点下方按钮可直接跳转到对应条款、标注或复核记录。","small"));
   for (const issue of issues) {
     const row = rowById.get(issue.rowId);
+    const canEdit = row && (model.stage==="lawyer" ||
+      (packageRoleHasRow(row,"student") && !lawyerPackageOverride(row)));
     const fixedFields = row ? fixedPackageBindingFields(row) : [];
     const item = node("section",null,"card package-validation-issue");
     item.append(node("h3",[issue.riskName || issue.title,issue.stance].filter(Boolean).join(" · "),"wrap"));
     if (issue.contractName) item.append(node("p",issue.contractName,"wrap small"));
     if (issue.location) item.append(node("p",issue.location,"wrap small"));
-    if (issue.question) item.append(node("p",issue.question.text,"wrap"));
     for (const problem of issue.problems) {
       const block = node("div",null,"package-validation-problem");
       if (problem.field) block.append(node("strong",problem.field));
@@ -2046,28 +2116,23 @@ function showPackageFailures(issues) {
         const label = sourceRowLabel(other?.id);
         block.append(button("查看另一条标注"+(label ? " · "+label : ""),()=>locatePackageIssue(issue,dialog,{rowId:problem.relatedRowId})));
       }
-      if (row && model.stage==="lawyer" && problem.editField && !packageBoundFields.includes(problem.editField) && !packageCurrentRemoval(row)) {
+      if (canEdit && problem.editField && !packageBoundFields.includes(problem.editField) && !packageCurrentRemoval(row)) {
         block.append(button("编辑"+problem.field,()=>locatePackageIssue(issue,dialog,{field:problem.editField})));
       }
       item.append(block);
     }
     const actions = node("div",null,"row-actions");
-    if (issue.question) actions.append(button("查看并审核问题",()=>{
-      dialog.close();
-      const question = dialogBox("实习生问题");
-      question.append(discussionCard(issue.question,"question",model.stage==="lawyer"));
-    }));
     if (row && issue.problems.some(problem=>problem.logs)) {
       actions.append(button("查看复核记录",()=>{dialog.close();showLogs(row.id);}));
     }
     if (row) actions.append(button("定位并查看标注",()=>locatePackageIssue(issue,dialog)));
     else if (issue.section) actions.append(button("定位合同条款",()=>locatePackageIssue(issue,dialog)));
-    if (row && model.stage==="lawyer" && !packageCurrentRemoval(row) && issue.problems.some(problem=>
+    if (canEdit && !packageCurrentRemoval(row) && issue.problems.some(problem=>
         problem.editBinding || (packageBoundFields.includes(problem.field) && !fixedFields.includes(problem.field)))) {
       actions.append(button("核对合同、规则或切片定位",()=>locatePackageIssue(issue,dialog,{editBinding:true})));
     }
     const restore = issue.problems.find(problem=>problem.canRestore);
-    if (model.stage==="lawyer" && restore && !fixedFields.includes(keyClause) && row?.section_id===restore.section.id) {
+    if (canEdit && restore && !fixedFields.includes(keyClause) && row.section_id===restore.section.id) {
       actions.append(button("恢复此条完整原文",()=>locatePackageIssue(issue,dialog,{restore}),"primary"));
     }
     item.insertBefore(actions,item.querySelector(".package-validation-problem"));
@@ -2084,21 +2149,28 @@ function sourceRowLabel(id) {
   return row ? (row.workbook ? "来源表 "+row.workbook+" · " : "来源表 · ")+"第 "+row.number+" 行" : "";
 }
 async function exportPackageWorkbook() {
-  if (model.stage!=="final") return setNotice("请导入律师终版 ZIP。");
-  const issues = finalPackageIssues(model,model.lawyer_opinion_required===true);
+  if (packageBusy) return;
+  const project = {...model,rows:model.rows.map(row=>{
+    const copy = {...row,lawyer:row.lawyer && {...row.lawyer}};
+    syncEffectivePackageRow(copy);
+    return copy;
+  })};
+  const issues = packageWorkbookIssues(project);
   if (issues.length) return showPackageFailures(issues);
-  const contractName = model.title;
-  const reviewer = packageSession.manifest.handoff?.actor || "";
-  const filename = await choosePackageFilename(packageExportName(contractName,reviewer,"只读验收","归档"),".xlsx");
-  if (!filename) return;
+  packageBusy = true;
   try {
-    const {blob,count,removed,replaced} = workbookForProject(model);
+    const filename = await choosePackageFilename(packageExportName(model.title,packageSession.actor.name,
+      roleTitle[model.stage],"标注集"),".xlsx");
+    if (!filename) return;
+    const {blob,count,removed,replaced} = workbookForProject(project);
     downloadPackageFile(blob,filename);
     setNotice("已发起下载 "+filename+"，共 "+count+" 条 × 15 列。"+
       (removed ? "已排除 "+removed+" 条确认删卡记录。" : "")+
       (replaced ? "已排除 "+replaced+" 条有对应新增卡片的旧不相关记录。" : ""));
   } catch (error) {
     setNotice("Excel 导出失败。"+error.message);
+  } finally {
+    packageBusy = false;
   }
 }
 
@@ -2295,7 +2367,7 @@ function focusPackageRow(id,move=true,role) {
   const row = rowById.get(id);
   if (!row) return false;
   selected = id;
-  const section = cards.find(Boolean)?.closest(".row-section").dataset.section ?? packageSlot(row);
+  const section = cards.find(Boolean)?.closest(".row-section").dataset.section ?? packageSlot(packageRoleRow(row,role || model.stage));
   let evidence;
   for (const mark of byId("left").querySelectorAll("mark")) {
     const active = JSON.parse(mark.dataset.rows).includes(id);
@@ -2314,72 +2386,20 @@ function focusPackageRow(id,move=true,role) {
   return true;
 }
 
-function indexHandoffChanges(events) {
-  const result = new Map();
-  for (const role of packageRoles) {
-    const handoff = events.findLast(event=>event.role===role && event.state.some(change=>change.key==="stage"));
-    if (!handoff) continue;
-    const records = new Map();
-    for (const event of events) {
-      if (event.role!==role || event.round!==handoff.round || event.seq>handoff.seq) continue;
-      for (const {id,before,after} of event.rows) {
-        const prior = records.get(id);
-        records.set(id,{before:prior ? prior.before : before,after});
-      }
-    }
-    result.set(role,records);
-  }
-  return result;
-}
-
-function handoffMark(row,view,role) {
-  if (model.stage===role) return null;
-  const records = packageSession.handoffChanges.get(role);
-  const change = records?.get(row.id);
-  if (!change) {
-    // Legacy snapshots lack a round boundary. Only label changes evidenced by a submitted snapshot.
-    if (records || role!=="student" || !row.submitted_fields || !row.original_fields) return null;
-    const fields = model.fields.filter(field=>get(view,field)!==asText(row.original_fields[field]));
-    return fields.length ? {label:"历史提交有改动",tone:"edited",fields,before:row.original_fields} : null;
-  }
-  const before = change.before?.fields || {};
-  const after = change.after.fields;
-  const fields = model.fields.filter(field=>asText(before[field])!==asText(after[field]));
-  const note = asText(change.before?.[role]?.note)!==asText(change.after[role]?.note);
-  const binding = packageBindingChanged(change.before,change.after);
-  const priorRisk = before[riskField], nextRisk = after[riskField];
-  const removal = roleRemoval(change.after,change.after,role);
-  const removed = removal && !samePackageValue(removal,roleRemoval(change.before || {},change.before || {},role));
-  const latest = change.after.review_history?.at(-1);
-  const judgmentChanged = (latest?.action==="restore" || Object.values(packageJudgmentLabels).includes(latest?.action)) &&
-    !samePackageValue(latest,change.before?.review_history?.at(-1));
-  const information = {fields,before,note,binding,judgmentChanged};
-  if (judgmentChanged && latest.action==="restore") return {...information,label:"本轮恢复",tone:"edited"};
-  if (removed || (priorRisk==="是" && nextRisk==="否" && !judgmentChanged)) return {...information,label:"本轮删除",tone:"removed"};
-  if (priorRisk!=="是" && (nextRisk==="是" || (!packageUntriggeredCard(before) && packageUntriggeredCard(after)))) {
-    return {...information,label:"本轮补标",tone:"edited"};
-  }
-  if (fields.length || binding || judgmentChanged) return {...information,label:"本轮有改动",tone:"edited"};
-  if (note) return {...information,label:"补充意见",tone:"edited"};
-  if (change.after[role]?.reviewed) return removal ? {...information,label:"已确认删除",tone:"removed"} :
-    {...information,label:"仅确认",tone:"confirmed"};
-  return null;
-}
 function roleRemoval(row,view,role) {
-  if (model.stage===role) {
-    return packageCurrentRemoval(row) ? latestPackageJudgment(row) : null;
-  }
   if (get(view,riskField)!=="否") return null;
-  const effectiveRole = role==="lawyer" && model.stage==="final" ? undefined : role;
-  const latest = latestPackageJudgment(row,effectiveRole);
+  const author = role==="lawyer" && lawyerPackageOverride(row) ? "lawyer" : "student";
+  const latest = latestPackageJudgment(row,author);
   return latest?.action==="remove" ? latest : null;
 }
-function awaitingHandoffConfirmation(row,role) {
-  if (model.stage!==role || row[role]?.reviewed) return false;
-  const other = role==="student" ? "lawyer" : "student";
-  const view = {...row,...roleProjection(row,other)};
-  const change = handoffMark(row,view,other);
-  return !!(change?.fields.length || change?.binding || change?.judgmentChanged || change?.tone==="removed");
+function packageRoleHasRow(row,role) {
+  return role==="lawyer" || (row.added_by!=="lawyer" && row.lawyer_review_only!==true);
+}
+function packageReviewState(row,role) {
+  if (!packageRoleHasRow(row,role)) return "";
+  if (!row[role]?.reviewed) return role+"-pending";
+  const changed = row[role]?.modified || packageSession.reviewHistory.changed[role].has(row.id);
+  return role+(changed ? "-changed" : role==="student" ? "-confirmed" : "-approved");
 }
 function refreshPackageReviewBadges(row,role) {
   const card = (role==="student" ? rowElements : lawyerCards).get(row.id);
@@ -2400,23 +2420,19 @@ function packageCardBadges(row,view,role,status) {
     packageJudgmentBadge(view);
   if (judgment) box.append(judgment);
   if (packageSharedRows.has(row.id)) box.append(node("span","通用 · 两版共用复核","badge"));
-  const change = handoffMark(row,view,role);
-  if (change) box.append(node("span",change.label,"badge package-change-"+change.tone));
-  if (removal && change?.tone!=="removed") {
+  if (removal) {
     const label = role==="lawyer" && removal.stage==="student" ? "实习生已删除" : "已删除";
     box.append(node("span",label,"badge package-change-removed"));
-  }
-  if (awaitingHandoffConfirmation(row,role)) {
-    box.append(node("span","改动待确认","badge empty"));
-  } else if (model.stage===role && packageSession.manifest.handoff?.targets?.includes(row.id) && !row[role]?.reviewed) {
-    box.append(node("span","退回待核对","badge empty"));
   }
   box.append(status);
   return box;
 }
-function matchesPackageRiskFilter(row,scope) {
-  const type = packageCardType(row.fields);
-  return scope==="review" ? type!=="unrelated" : type===scope;
+function matchesPackageRiskFilter(type,scope,status) {
+  if (scope!=="review") return type===scope;
+  return type!=="unrelated" || ["student-changed","student-confirmed","lawyer-changed","lawyer-approved"].includes(status);
+}
+function packageShowsUnrelated() {
+  return matchesPackageRiskFilter("unrelated",byId("scope").value,byId("review-status").value);
 }
 function packageJudgmentBadge(view,prefix="") {
   const type = packageCardType(view.fields);
@@ -2425,43 +2441,34 @@ function packageJudgmentBadge(view,prefix="") {
   return node("span",prefix+(packageCardLabels.get(type) || "判断待核对"),"badge "+tone);
 }
 function packageReviewStatus(row,role) {
-  if (packageListType(row,role)==="unrelated") return node("span","无需复核","badge");
-  const missingLegacyConfirmation = model.stage==="final" && model.review_related!==true && requiresUntriggeredReview(row) && !requiresRiskReview(row);
-  const status = node("span",row[role]?.reviewed ? "已复核" : missingLegacyConfirmation ? "历史未确认" :
-    requiresReview(row) ? "待复核" : "可复核","badge");
+  const state = packageReviewState(row,role);
+  if (!row[role]?.reviewed && packageListType(row,role)==="unrelated") return node("span","无需复核","badge");
+  const label = packageReviewFilters.find(([value])=>value===state)?.[1];
+  const tone = state.endsWith("-changed") ? " package-change-edited" :
+    row[role]?.reviewed ? " package-change-confirmed" : "";
+  const status = node("span",label || "待复核","badge"+tone);
   status.dataset.reviewed = "";
   return status;
 }
 
-function showLawyerColumn() {
-  return model.stage!=="student" || packageSession.handoffChanges.has("lawyer") ||
-    model.rows.some(row=>row.lawyer?.reviewed || row.lawyer?.note || row.lawyer_view);
+function canComparePackageRole(row,role) {
+  const other = oppositePackageRole(role);
+  return packageRoleHasRow(row,other) && !row.replaced_by &&
+    (packageListType(row,other)!=="unrelated" || packageShowsUnrelated());
 }
-function canComparePackageRole(row,role,lawyerVisible=showLawyerColumn()) {
-  return (role==="student" ? lawyerVisible : row.lawyer_review_only!==true) &&
-    !row.replaced_by && (packageListType(row,oppositePackageRole(role))!=="unrelated" || byId("scope").value==="unrelated");
-}
-function packageListType(row,role,view={...row,...roleProjection(row,role)}) {
+function packageListType(row,role,view=packageRoleRow(row,role)) {
   return packageCardType(roleRemoval(row,view,role)?.before ?? view.fields);
 }
 function shownPackageRows(role) {
   const scope = byId("scope").value, status = byId("review-status").value;
   const search = byId("search").value.trim().toLowerCase();
-  const changeStatus = byId("change-status").value;
-  if (role==="lawyer" && !showLawyerColumn()) return [];
+  const filterRole = status.split("-")[0];
   return model.rows.flatMap(row=>{
-    const changed = packageSession.changedRows.has(row.id);
-    if (changeStatus && changed!==(changeStatus==="changed")) return [];
-    if (model.stage!=="student" && role==="student" && row.lawyer_review_only===true) return [];
-    const view = {...row,...roleProjection(row,role)};
-    const pending = role===model.stage && get(row,riskField)==="是" && !row[role]?.reviewed && get(view,riskField)!=="是";
-    if (pending && !get(view,"风险名称")) Object.assign(view,packageRecordVersion(row));
-    if (row.replaced_by) return [];
+    if (row.replaced_by || !packageRoleHasRow(row,role)) return [];
+    if (status && packageReviewState(row,filterRole)!==status) return [];
+    const view = packageRoleRow(row,role);
     const section = packageSlot(view);
-    if (section===undefined) return [];
-    const removal = roleRemoval(row,view,role);
-    if (!matchesPackageRiskFilter(removal?.before ? {...view,fields:removal.before} : view,scope)) return [];
-    if (role===model.stage && status && !!row[role]?.reviewed!==(status==="reviewed")) return [];
+    if (section===undefined || !matchesPackageRiskFilter(packageListType(row,role,view),scope,status)) return [];
     if (search && ![row.id,get(view,"风险名称"),get(view,keyEvidence)].some(text=>text.toLowerCase().includes(search))) return [];
     return [{row,view,section}];
   });
@@ -2509,7 +2516,7 @@ function packageCardMetadata(view,tail) {
   if (rest) info.append((stance ? " · " : "")+rest);
   return info;
 }
-function packageCard(row,view,role,lawyerVisible,next) {
+function packageCard(row,view,role,next) {
   const card = node("article",null,"card package-card");
   card.dataset.row = row.id;
   stylePackageRiskCard(card,view);
@@ -2523,7 +2530,7 @@ function packageCard(row,view,role,lawyerVisible,next) {
   const actions = node("div",null,"row-actions");
   actions.append(button("查看细节",()=>openPackageDetail(row,role),"package-edit-button"),
     button("定位原文",()=>focusPackageRow(row.id,false)));
-  if (canComparePackageRole(row,role,lawyerVisible)) actions.append(button("对照另一栏",()=>alignPackageCounterpart(row,role)));
+  if (canComparePackageRole(row,role)) actions.append(button("对照另一栏",()=>alignPackageCounterpart(row,role)));
   const advance = button("下一条",()=>advancePackageList(next,role));
   advance.disabled = !next;
   actions.append(advance);
@@ -2550,7 +2557,8 @@ function closePackageDetail(role) {
   return true;
 }
 function openPackageDetail(row,role,newCard) {
-  if (!newCard && (row.replaced_by || (packageListType(row,role)==="unrelated" && byId("scope").value!=="unrelated"))) return;
+  if (!newCard && (row.replaced_by || !packageRoleHasRow(row,role) ||
+      (packageListType(row,role)==="unrelated" && !packageShowsUnrelated()))) return;
   const current = packageDetailPages.get(role);
   if (current?.rowId===row.id) {
     current.element.querySelector(".package-detail-nav button:not(:disabled)")?.focus({preventScroll:true});
@@ -2585,7 +2593,7 @@ function packageHasDetailDraft() {
   return [...packageDetailPages.values()].some(page=>page.draft || page.newCard);
 }
 function packageRowRemoved(row) {
-  const latest = latestPackageJudgment(row);
+  const latest = latestPackageJudgment(row,lawyerPackageOverride(row) ? "lawyer" : undefined);
   if (latest?.action==="remove") return true;
   if (latest?.action==="restore" ||
       (latest?.action===packageJudgmentLabels.clear && relatedUntriggered(row.fields)) ||
@@ -2594,7 +2602,7 @@ function packageRowRemoved(row) {
   return wasRisk(row);
 }
 function stagePackageJudgment(page,row,triggered) {
-  const current = page.draft || row;
+  const current = page.draft || packageRoleRow(row,page.role);
   const missing = packageIsFullMissing(current);
   const draft = structuredClone(current);
   draft.fields[riskField] = triggered ? "是" : "否";
@@ -2616,7 +2624,7 @@ function stagePackageRemoval(page,row) {
         reason.setCustomValidity("请填写删除原因。");
         return reason.reportValidity();
       }
-      page.draft ||= structuredClone(row);
+      page.draft ||= structuredClone(packageRoleRow(row,page.role));
       page.judgment = {action:"remove",reason:text};
       dialog.close();
       updatePackageDetail(page,row,true);
@@ -2626,8 +2634,9 @@ function stagePackageRemoval(page,row) {
 }
 
 function stagePackageRestore(page,row) {
-  page.draft ||= structuredClone(row);
-  page.draft.fields = {...lastRiskRemoval(row).before};
+  const current = packageRoleRow(row,page.role);
+  page.draft ||= structuredClone(current);
+  page.draft.fields = {...roleRemoval(row,current,page.role).before};
   page.judgment = {action:"restore",reason:"恢复删除前的标注"};
   updatePackageDetail(page,row,true);
 }
@@ -2682,8 +2691,9 @@ function addPackageCard(section,sourceId=contractId,alternate,evidenceText="") {
       resetRiskFilters(contractId);
       revealPackageRowVersion(existing);
       render();
-      openPackageDetail(existing,model.stage);
-      focusPackageRow(existing.id,false,model.stage);
+      const role = packageRoleHasRow(existing,model.stage) ? model.stage : "lawyer";
+      openPackageDetail(existing,role);
+      focusPackageRow(existing.id,false,role);
       setNotice("该合同、规则及位置已有卡片，已打开供复核或恢复。");
       return;
     }
@@ -2712,25 +2722,18 @@ function addPackageCard(section,sourceId=contractId,alternate,evidenceText="") {
     openPackageDetail(row,role,{row,replaces:candidates});
   },"primary"));
 }
-function confirmAllPackageAnnotations() {
-  if (packageHasDetailDraft()) return setNotice("请先确认当前卡片，或退出详情放弃未确认的改动。");
-  const pending = packageReviewRows().filter(row=>!isReviewed(row));
-  if (!pending.length) return setNotice("本包所有标注已复核。");
-  for (const row of pending) reviewData(row,model.stage).reviewed = true;
-  changed("确认所有未复核的标注");
-  render(true);
-  setNotice("已确认本包所有 "+pending.length+" 条未复核标注。");
-}
 function latestPackageFieldEdit(row) {
-  const version = packageRecordVersion(row);
+  const role = model.stage;
+  const version = roleProjection(row,role);
   for (let index = packageSession.events.length-1; index>=0; index--) {
     const event = packageSession.events[index];
     if (event.round!==packageSession.manifest.round || event.role!==model.stage) break;
     const change = event.rows.find(item=>item.id===row.id);
     if (!change) continue;
     if (!change.before || !samePackageValue(change.before.review_history,change.after.review_history)) break;
-    const after = packageRecordVersion(change.after);
-    if (samePackageValue(packageRecordVersion(change.before),after)) continue;
+    const before = packageRecordVersion(change.before[role+"_view"] ?? change.before);
+    const after = packageRecordVersion(change.after[role+"_view"] ?? change.after);
+    if (samePackageValue(before,after)) continue;
     if (["编辑标注字段","编辑标注字段并确认"].includes(event.action) && samePackageValue(version,after)) return event;
     break;
   }
@@ -2739,7 +2742,7 @@ function undoPackageFieldEdit(page,row) {
   const edit = latestPackageFieldEdit(row);
   if (!edit) return;
   const before = edit.rows.find(item=>item.id===row.id).before;
-  page.draft = {...structuredClone(row),...packageRecordVersion(before)};
+  page.draft = {...structuredClone(row),...packageRecordVersion(before[page.role+"_view"] ?? before)};
   updatePackageDetail(page,row,true);
 }
 function packageDraftIssue(draft,requireRiskFields,checkEvidence) {
@@ -2762,19 +2765,21 @@ function packageDraftIssue(draft,requireRiskFields,checkEvidence) {
 
 function confirmPackageDetail(page,row) {
   const {role,draft,judgment,newCard} = page;
-  const pending = draft || row;
+  const current = packageRoleRow(row,role);
+  const pending = draft || current;
   const action = judgment?.action;
   if (!draft && !newCard) {
     const review = reviewData(row,role);
     review.reviewed = !review.reviewed;
-    changed(packageCurrentRemoval(row) ? "确认删除结果" : "复核确认");
+    if (review.reviewed) row[role+"_view"] = packageRecordVersion(current);
+    changed(roleRemoval(row,current,role) ? "确认删除结果" : "复核确认");
   } else {
     const removing = action==="remove";
     const restoring = action==="restore";
     const newTrigger = (newCard || action===packageJudgmentLabels.triggered) && get(pending,riskField)==="是";
     if (!removing) {
-      const checkEvidence = !!(newCard || action || get(pending,keyEvidence)!==get(row,keyEvidence) ||
-        get(pending,keyClause)!==get(row,keyClause));
+      const checkEvidence = !!(newCard || action || get(pending,keyEvidence)!==get(current,keyEvidence) ||
+        get(pending,keyClause)!==get(current,keyClause));
       const issue = packageDraftIssue(pending,newTrigger,checkEvidence);
       if (issue) return issue;
       if (newCard && !packageIsFullMissing(pending) && !get(pending,"条款类型").trim()) return "请填写条款类型。";
@@ -2784,33 +2789,47 @@ function confirmPackageDetail(page,row) {
       model.rows.push(row);
       indexRows();
     }
-    const oldType = packageCardType(row.fields);
+    const oldType = packageCardType(current.fields);
     const targets = action && !newCard ? sameJudgment(row).filter(part=>part===row || (!part.replaced_by &&
-      (restoring ? packageCurrentRemoval(part) : !packageCurrentRemoval(part) && packageCardType(part.fields)===oldType))) : [row];
+      (restoring ? roleRemoval(part,packageRoleRow(part,role),role) :
+        !roleRemoval(part,packageRoleRow(part,role),role) && packageListType(part,role)===oldType))) : [row];
     for (const part of targets) {
-      const before = structuredClone(part);
-      if (newCard) remember(part,"add","新增风险卡");
-      else if (action && (removing || restoring || oldType!==packageCardType(pending.fields))) remember(part,action,judgment.reason || "");
+      const before = packageRoleRow(part,role);
+      const result = packageRecordVersion(before);
       if (part===row) {
-        for (const [key,value] of Object.entries(packageRecordVersion(pending))) {
-          if (value===undefined) delete row[key];
-          else row[key] = value;
-        }
+        Object.assign(result,packageRecordVersion(pending));
       } else if (restoring) {
-        // The latest history entry records the restore; use the previous removal.
-        Object.assign(part.fields,lastRiskRemoval(part).before);
+        result.fields = {...roleRemoval(part,before,role).before};
       } else if (!removing) {
-        for (const field of [riskField,keyEvidence,"风险说明","修订建议"]) part.fields[field] = pending.fields[field];
+        for (const field of [riskField,keyEvidence,"风险说明","修订建议"]) result.fields[field] = pending.fields[field];
       }
       if (removing) {
-        Object.assign(part.fields,{[keyRelevant]:"否",[riskField]:"否"});
-        for (const field of packageCardBlankFields("unrelated")) part.fields[field] = "";
+        Object.assign(result.fields,{[keyRelevant]:"否",[riskField]:"否"});
+        for (const field of packageCardBlankFields("unrelated")) result.fields[field] = "";
       }
-      if (!newCard) invalidatePackageReview(part,before);
+      const recordedAction = newCard ? "add" : action &&
+        (removing || restoring || oldType!==packageCardType(result.fields)) ? action : "";
+      if (recordedAction) {
+        (part.review_history ||= []).push({action:recordedAction,stage:role,
+          reason:newCard ? "新增风险卡" : judgment.reason || "",before:before.fields,at:new Date().toISOString()});
+        part.review_required = true;
+      }
       const review = reviewData(part,role);
-      if (part===row) review.note = pending[role]?.note || "";
+      const modifiedFields = !!recordedAction || packageAnnotationChanged(before,result);
+      const note = part===row ? pending[role]?.note || "" : review.note;
+      if (modifiedFields || asText(note)!==asText(review.note)) review.modified = true;
+      if (modifiedFields) {
+        if (role==="lawyer") {
+          if (!newCard) part.student_view ||= packageRecordVersion(roleProjection(part,"student"));
+          review.override = true;
+        } else if (part.lawyer?.reviewed && !lawyerPackageOverride(part)) {
+          part.lawyer.reviewed = false;
+        }
+      }
+      review.note = note;
       review.reviewed = true;
-      part[role+"_view"] = packageRecordVersion(part);
+      part[role+"_view"] = result;
+      syncEffectivePackageRow(part);
     }
     delete page.draft;
     delete page.judgment;
@@ -2845,7 +2864,7 @@ function packageReviewPanel(page,row) {
     confirm.className = reviewed ? "package-review-confirm" : "primary package-review-confirm";
   }
   function saveDraft(edit) {
-    page.draft ||= structuredClone(row);
+    page.draft ||= structuredClone(packageRoleRow(row,role));
     edit(page.draft);
     message.textContent = "";
     refreshConfirmation();
@@ -2877,13 +2896,16 @@ function updatePackageDetail(page,row,force=false) {
   if (!force && page.version===version) return;
   page.version = version;
   const offset = element.scrollTop;
-  const shown = page.draft || row;
-  const view = {...row,...(model.stage===role && (page.draft || page.newCard) ? packageRecordVersion(shown) : roleProjection(row,role))};
+  const current = packageRoleRow(row,role);
+  const shown = page.draft || current;
+  const view = shown;
   const type = packageCardType(shown.fields);
   const restoring = page.judgment?.action==="restore";
   const removing = page.judgment?.action==="remove";
-  const deleted = packageCurrentRemoval(row) && !restoring;
-  const editable = model.stage===role && packageSlot(row)!==undefined && (deleted || type!=="unrelated");
+  const savedRemoval = roleRemoval(row,current,role);
+  const deleted = !!savedRemoval && !restoring;
+  const editable = model.stage===role && packageRoleHasRow(row,role) &&
+    packageSlot(current)!==undefined && (deleted || type!=="unrelated");
   const canEdit = editable && !deleted && !removing;
   const navigation = node("div",null,"package-detail-nav");
   navigation.append(button("返回标注列表",()=>closePackageDetail(role),"package-detail-back"),
@@ -2901,8 +2923,7 @@ function updatePackageDetail(page,row,force=false) {
   const heading = node("div",null,"card-head");
   heading.append(node("h3",get(view,"风险名称") || "缺少风险名称"),
     page.draft || page.newCard ? packageJudgmentBadge(view) : packageCardBadges(row,view,role,status));
-  const change = handoffMark(row,view,role);
-  const removal = restoring ? null : editable && deleted ? lastRiskRemoval(row) : roleRemoval(row,view,role);
+  const removal = restoring ? null : savedRemoval;
   body.append(heading,packageCardMetadata(view,row.id));
   if (page.editing && canEdit) {
     const editor = node("div",null,"package-edit-form");
@@ -2951,15 +2972,12 @@ function updatePackageDetail(page,row,force=false) {
       for (const triggered of [true,false]) commands.append(button(triggered ? "更正为触发" : "更正为未触发",
         ()=>stagePackageJudgment(page,row,triggered)));
     }
-    if (role==="student") commands.append(button("提出问题",()=>editDiscussion("question",{row})));
   }
   if (commands.children.length) body.append(commands);
   if (removal) body.append(node("p","删除理由："+asText(removal.reason),"wrap package-removal-reason"));
   if (removing) body.append(node("p","待确认删除："+page.judgment.reason,"wrap package-removal-reason"));
   const opinion = editable ? packageReviewPanel(page,row) : notePanel(row,role,false);
-  if (change?.note) opinion.classList.add("package-diff-value");
   body.append(opinion);
-  if (change?.binding) body.append(node("p","本轮调整了合同、规则或条款定位。","small package-diff-value"));
   const values = node("dl",null,"summary-grid package-fields");
   const fieldsView = editable ? shown : view;
   const unexpected = packageCardBlankFields(packageCardType(fieldsView.fields)).filter(field=>get(fieldsView,field).trim());
@@ -2967,24 +2985,16 @@ function updatePackageDetail(page,row,force=false) {
   if (role==="student") {
     appendReviewFields(values,row.original_fields,fieldsView,["AI 初标","实习生复核"]);
   } else {
-    const submitted = model.stage==="lawyer" ? null : row.student_view?.fields ?? row.submitted_fields ?? change?.before;
+    const submitted = packageRoleHasRow(row,"student") ? studentPackageVersion(row).fields : null;
     appendReviewFields(values,submitted,fieldsView,["实习生复核","律师复核"]);
   }
   body.append(node("h3",role==="student" && !row.student_view && !row.submitted_fields && !row.added_by ? "AI 初标字段" : "标注字段"),values);
-  if (canEdit && !samePackageValue(row.fields,view.fields)) {
-    const previous = node("details");
-    const fields = node("dl",null,"summary-grid package-fields");
-    for (const field of model.fields) detailItem(fields,field,get(view,field));
-    previous.append(node("summary","本栏此前的标注"),fields);
-    body.append(previous);
-  }
   element.replaceChildren(navigation,body);
   element.scrollTop = offset;
 }
 
 function renderPackage(keepScroll) {
   const columns = packageAnchors();
-  const lawyerVisible = showLawyerColumn();
   const scroll = columns.map(([id])=>keepScroll ? byId(id).scrollTop : 0);
   const sections = packageSectionPlan();
   const grouped = {};
@@ -3052,10 +3062,6 @@ function renderPackage(keepScroll) {
     fragments[0].append(block);
   }
   for (const [role,fragment,anchors,cards] of [["student",middle,rightSections,rowElements],["lawyer",lawyer,lawyerSections,lawyerCards]]) {
-    if (role==="lawyer" && !lawyerVisible) {
-      fragment.append(node("p","实习生提交后，由律师在此复核。","package-lane-empty"));
-      continue;
-    }
     const ordered = [...grouped[role].values()].flat();
     if (!ordered.length) fragment.append(node("p","当前筛选下暂无批注卡片。","package-lane-empty"));
     let cardIndex = 0;
@@ -3071,13 +3077,16 @@ function renderPackage(keepScroll) {
       }
       group.append(heading);
       for (const {row,view} of entries) {
-        const card = packageCard(row,view,role,lawyerVisible,ordered[++cardIndex]?.row);
+        const card = packageCard(row,view,role,ordered[++cardIndex]?.row);
         group.append(card);
         cards.set(row.id,card);
       }
       if (id) anchors.set(id,group);
       fragment.append(group);
     }
+    const count = byId(role+"-list-count");
+    const text = "显示 "+cardIndex+" 条";
+    if (count.textContent!==text) count.textContent = text;
   }
   columns.forEach(([id],index)=>{
     const tail = node("div",null,"scroll-tail");
@@ -3094,13 +3103,9 @@ function renderPackage(keepScroll) {
   for (const page of packageDetailPages.values()) {
     const row = page.newCard?.row || rowById.get(page.rowId);
     if (!row || (model.stage===page.role && openEditor===page.rowId)) continue;
-    if (row.replaced_by || (packageListType(row,page.role)==="unrelated" && byId("scope").value!=="unrelated")) closePackageDetail(page.role);
+    if (row.replaced_by || (packageListType(row,page.role)==="unrelated" && !packageShowsUnrelated())) closePackageDetail(page.role);
     else updatePackageDetail(page,row);
   }
-  byId("match").textContent = "当前显示 "+visible.student.length+" 张";
-  const lawyerMatch = byId("lawyer-match");
-  lawyerMatch.hidden = !lawyerVisible;
-  lawyerMatch.textContent = "当前显示 "+visible.lawyer.length+" 张";
   progress();
 }
 
@@ -3112,7 +3117,7 @@ function appendPackageContractContext(fragment,contract,text,sameText,stanceLabe
   fragment.append(details);
 }
 
-function finalPackageIssues(project,requireOpinion=true) {
+function packageWorkbookIssues(project) {
   const issues = [];
   const contracts = new Map(project.contracts.map(contract=>[contract.id,contract]));
   const rules = new Map(project.rules.map(rule=>[rule.id,rule]));
@@ -3243,17 +3248,6 @@ function finalPackageIssues(project,requireOpinion=true) {
         add("删除记录","删卡记录缺少原因或删除前的完整标注。",{logs:true});
       }
     }
-    if (requiresReview(row)) {
-      if (!row.student?.reviewed && row.lawyer_review_only!==true) {
-        add("实习生复核","这条记录缺少实习生确认，请核对实习生提交的 ZIP。",{logs:packageCurrentRemoval(row)});
-      }
-      if (!row.lawyer?.reviewed) add("律师复核",packageCurrentRemoval(row) ?
-        "这条卡已删除，请到复核记录确认删除结果。" : "这条记录尚未确认，请打开律师栏标注并确认。",{logs:packageCurrentRemoval(row)});
-      const needsOpinion = project.review_related===true ? wasRisk(row) : requiresRiskReview(row);
-      if (requireOpinion && needsOpinion && !hasLawyerOpinion(row)) {
-        add("律师复核意见","这条历史终版记录需要有律师复核意见。",{logs:packageCurrentRemoval(row)});
-      }
-    }
     if (problems.length) issues.push(item);
   }
   for (const [key,path] of paths) {
@@ -3273,15 +3267,6 @@ function finalPackageIssues(project,requireOpinion=true) {
     for (const section of expected) {
       if (!actual.has(section)) coverageIssue(path,"该位置缺少这条规则要求的标注。",section);
     }
-  }
-  if (!Array.isArray(project.review_questions ?? [])) {
-    issues.push({title:"实习生问题",problems:[{reason:"问题记录的格式无效，请核对接收的 ZIP。"}]});
-  } else for (const question of project.review_questions || []) {
-    if (questionReviewed(question)) continue;
-    const row = project.rows.find(item=>item.id===question.row_id);
-    const item = issueContext(row?.contract_id ?? question.contract_id,row?.rule_id,row?.section_id,row?.scope,row);
-    issues.push({...item,title:"实习生问题待审核",riskName:undefined,question,
-      problems:[{reason:"请填写律师答复，并勾选「确认此问题已审核」。"}]});
   }
   return issues;
 }
@@ -3392,7 +3377,7 @@ function appendReviewFields(values,original,view,[beforeTitle,afterTitle]) {
 "use strict";
 
 const root = document.querySelector("#app");
-const stageNames = {student:"同学复核", lawyer:"律师复核", final:"律师已复核"};
+const stageNames = {student:"实习生复核", lawyer:"律师复核", final:"律师已复核"};
 const keyEvidence = "风险判断关键证据";
 const keyRelevant = "条款与规则是否相关";
 const defaultRisk = "是否触发该风险";
@@ -3533,16 +3518,29 @@ function indexRows() {
     rowById.set(row.id, row);
   }
 }
-function reviewProgressLabel() {
+function reviewListCountLabel(role) {
   const count = node("span",null,"small");
-  count.id = "progress";
+  count.id = role+"-list-count";
   count.setAttribute("aria-live","polite");
-  if (packageMode) count.title = "已确认项数 / 必审总数。两个版本共用的标注合为一次确认。";
+  return count;
+}
+function reviewProgressLabel(role) {
+  const count = node("span",null,packageMode ? "package-review-progress" : "small");
+  count.id = packageMode ? role+"-progress" : "progress";
+  count.setAttribute("aria-live","polite");
+  if (packageMode) count.title = "整包已复核 / 应复核。两版共用标注计为一项。";
   return count;
 }
 function progress() {
-  const required = packageMode ? packageReviewRows() : model.rows.filter(requiresReview);
-  byId("progress").textContent = (packageMode ? "整包必审已确认 " : "全批风险卡已复核 ") + required.filter(isReviewed).length + " / " + required.length;
+  if (packageMode) {
+    for (const role of packageRoles) {
+      const required = packageReviewRows(role);
+      byId(role+"-progress").textContent = "已复核 "+required.filter(row=>row[role]?.reviewed).length+" / "+required.length;
+    }
+    return;
+  }
+  const required = model.rows.filter(requiresReview);
+  byId("progress").textContent = "全批风险卡已复核 "+required.filter(isReviewed).length+" / "+required.length;
 }
 function currentSections(id=contractId) {
   const contract = contractById.get(id);
@@ -3590,7 +3588,7 @@ function filterRows() {
 function resetRiskFilters(id) {
   if (packageMode) configurePackageContract(id);
   else contractId = contractById.has(id) ? id : "";
-  const values = {contract:contractId,scope:"review","review-status":"","change-status":"",search:""};
+  const values = {contract:contractId,scope:"review","review-status":"",search:""};
   for (const [key,value] of Object.entries(values)) {
     const input = byId(key);
     if (!input) continue;
@@ -4042,7 +4040,6 @@ function editPanel(row,article,options={}) {
       return;
     }
     dirty = true;
-    if (packageMode) invalidatePackageReview(row,before);
     if (requiresReview(row)) {
       reviewData(row,model.stage).reviewed = false;
       if (!(packageMode && packagePairByContract.has(row.contract_id)) && !filterRows().includes(row)) resetRiskFilters(row.contract_id);
@@ -4217,8 +4214,10 @@ function editDiscussion(kind,{row,entry}={}) {
   if (openEditor) return setNotice("请先应用或取消当前编辑。");
   if (!contractById.has(contractId)) return setNotice("请先选择实际合同。");
   const question = kind === "question";
-  const title = question ? "实习生问题" : "律师建议";
-  const dialog = dialogBox(entry ? "编辑" + title : question ? "提出问题" : "新建建议");
+  const title = packageMode ? question ? "问题" : "建议" : question ? "实习生问题" : "律师建议";
+  const heading = entry ? "编辑" + title : packageMode ? "添加" + title : question ? "提出问题" : "新建建议";
+  const dialog = dialogBox(heading);
+  dialog.setAttribute("aria-label",heading);
   const input = node("textarea");
   input.rows = 4;
   input.value = entry?.text || "";
@@ -4237,7 +4236,8 @@ function editDiscussion(kind,{row,entry}={}) {
       entry.text = text;
     } else {
       const record = {contract_id:contractId,text};
-      if (packageMode) record.id = crypto.randomUUID();
+      if (packageMode) Object.assign(record,{id:crypto.randomUUID(),author_id:packageSession.actor.id,
+        author_role:model.stage,author_name:packageSession.actor.name});
       if (rowId) record.row_id = rowId;
       if (question) {
         questions.push(record);
@@ -4247,9 +4247,10 @@ function editDiscussion(kind,{row,entry}={}) {
         model.lawyer_suggestions = suggestions;
       }
     }
-    changed(question ? "实习生问题" : "律师建议");
+    changed(packageMode ? heading : question ? "实习生问题" : "律师建议");
     dialog.close();
-    renderLawyerPane();
+    if (packageMode) showPackageDiscussion();
+    else renderLawyerPane();
     setNotice(title + (packageMode ? "已保存，请导出 ZIP 交接。" : "已保存，随下一份 HTML 交接。"));
   },"primary"));
   input.focus();
@@ -4282,8 +4283,16 @@ function discussionCard(item,kind,editable) {
   const row = rowById.get(item.row_id);
   card.append(node("strong",item.text,"wrap"));
   card.append(node("p",row ? discussionSource(row) : "整份合同","small discussion-source"));
+  if (packageMode && item.author_name) {
+    card.append(node("p",[roleTitle[item.author_role],item.author_name].filter(Boolean).join(" · "),"small"));
+  }
   if (row && model.stage !== "student") card.append(button("定位关联标注",()=>locateDiscussion(row)));
-  if (kind === "suggestion" && editable) card.append(button("编辑建议",()=>editDiscussion(kind,{entry:item})));
+  const canEdit = packageMode && item.author_id ? item.author_id===packageSession.actor?.id :
+    kind==="suggestion" ? editable : !packageMode && model.stage==="student";
+  if (canEdit) card.append(button(kind==="question" ? "编辑问题" : "编辑建议",()=>{
+    card.closest("dialog")?.close();
+    editDiscussion(kind,{entry:item});
+  }));
   if (kind === "question") {
     const status = node("span",questionReviewed(item) ? "已审核" : "待审核","badge");
     card.prepend(status);
@@ -4300,7 +4309,7 @@ function discussionCard(item,kind,editable) {
         status.textContent = "待审核";
         dirty = true;
       };
-      if (packageMode) input.onchange = ()=>changed("答复实习生问题");
+      if (packageMode) input.onchange = ()=>changed("答复问题");
       checkbox.onchange = () => {
         if (checkbox.checked && !input.value.trim()) {
           checkbox.checked = false;
@@ -4313,17 +4322,13 @@ function discussionCard(item,kind,editable) {
       };
       card.append(labelled("律师审核答复",input),labelled("确认此问题已审核",checkbox));
     } else if (item.response) card.append(node("p","律师答复　" + item.response,"wrap"));
-    if (model.stage === "student") card.append(button("编辑问题",()=> {
-      card.closest("dialog")?.close();
-      editDiscussion(kind,{entry:item});
-    }));
   }
   return card;
 }
 function appendDiscussion(container,editable) {
   for (const [title,items,kind,empty] of [
-    ["实习生问题",questions,"question","本合同暂无问题。"],
-    ["律师建议",suggestions,"suggestion","本合同暂无建议。"]
+    [packageMode ? "问题" : "实习生问题",questions,"question","本合同暂无问题。"],
+    [packageMode ? "建议" : "律师建议",suggestions,"suggestion","本合同暂无建议。"]
   ]) {
     const current = items.filter(item=>item.contract_id===contractId);
     container.append(node("h3",title));
@@ -4364,14 +4369,20 @@ function remember(row, action, reason) {
   row.review_required = true;
 }
 function sameJudgment(row) {
-  if (!row.rule_id || !row.contract_id) return [row];
-  const sections = currentSections(row.contract_id);
-  const section = resolveSection(row,sections);
+  const view = item => packageMode ? packageRoleRow(item,model.stage) : item;
+  const reference = view(row);
+  if (!reference.rule_id || !reference.contract_id) return [row];
+  const sections = currentSections(reference.contract_id);
+  const section = resolveSection(reference,sections);
   const fullMissing = item => packageMode ? packageIsFullMissing(item) : item.scope === "full_missing";
-  if (!section && !fullMissing(row)) return [row];
-  return model.rows.filter(item => item.contract_id===row.contract_id && item.rule_id===row.rule_id &&
-    (item.matter_id || "")===(row.matter_id || "") &&
-    (fullMissing(row) ? fullMissing(item) : !fullMissing(item) && resolveSection(item,sections)===section));
+  if (!section && !fullMissing(reference)) return [row];
+  return model.rows.filter(row=>{
+    if (packageMode && !packageRoleHasRow(row,model.stage)) return false;
+    const item = view(row);
+    return item.contract_id===reference.contract_id && item.rule_id===reference.rule_id &&
+      (item.matter_id || "")===(reference.matter_id || "") &&
+      (fullMissing(reference) ? fullMissing(item) : !fullMissing(item) && resolveSection(item,sections)===section);
+  });
 }
 function removeRow(row) {
   if (openEditor) return setNotice("请先应用或取消当前编辑。");
@@ -4406,7 +4417,6 @@ function removeRow(row) {
       remember(part,"remove",reason.value.trim());
       Object.assign(part.fields,{[riskField]:"否",[keyRelevant]:related?.value ?? "否",[keyEvidence]:evidence.value,"风险说明":"","修订建议":""});
       part.review_required = true;
-      if (packageMode) invalidatePackageReview(part,before);
       const review = reviewData(part,model.stage);
       review.reviewed = model.stage === "student";
       review.note = [review.note,reason.value.trim()].filter(Boolean).join("\n");
@@ -4430,7 +4440,6 @@ function restoreRiskCard(row,reason="恢复风险判断",dialog=null) {
     const before = packageMode ? structuredClone(part) : null;
     remember(part,"restore",reason);
     Object.assign(part.fields,previous.before);
-    if (packageMode) invalidatePackageReview(part,before);
     reviewData(part,model.stage).reviewed = false;
   }
   changed("恢复风险卡");
@@ -4643,7 +4652,6 @@ function addAnnotation(section, evidenceText="", chooseSection=false, triggered=
       else delete row.section_id;
       reviewData(row,model.stage).reviewed = false;
       if (!packageMode && model.stage==="lawyer") reviewData(row,"student").reviewed=false;
-      if (packageMode) invalidatePackageReview(row,before);
     }
     indexRows();
     resetRiskFilters(contractId);
@@ -4657,7 +4665,6 @@ function confirmCurrent() {
     setNotice("请先应用或取消当前编辑。");
     return;
   }
-  if (packageMode) return confirmAllPackageAnnotations();
   const item = "张风险卡";
   const rows = filterRows().filter(row => requiresReview(row) && !isReviewed(row));
   if (!rows.length) return setNotice("当前筛选没有需要确认的记录。");
@@ -4812,12 +4819,11 @@ function launch() {
   const contractLabel = packageMode ? "合同附件名称" : "合同";
   contract.setAttribute("aria-label",contractLabel);
   contract.value = contractId;
-  const changeStatus = packageMode ? choose("change-status",[["","全部"],["changed","有改动"],["unchanged","未改动"]]) : null;
-  changeStatus?.setAttribute("aria-label","改动状态");
   const scope = choose("scope",packageMode ?
     [["review","全部类型"],...packageCardLabels] :
     [["review","全部类型"],["slice","触发风险"],["no-clause","缺失风险"]]);
-  const reviewStatus = choose("review-status",[["","全部状态"],["unreviewed","未复核"],["reviewed","已复核"]]);
+  const reviewStatus = choose("review-status",packageMode ? packageReviewFilters :
+    [["","全部状态"],["unreviewed","未复核"],["reviewed","已复核"]]);
   scope.setAttribute("aria-label","风险类型");
   reviewStatus.setAttribute("aria-label","复核状态");
   const search = node("input");
@@ -4831,10 +4837,7 @@ function launch() {
     linked = sync.checked;
     if (linked) syncPanes(lastUserSide);
   };
-  const reviewFilter = labelled(packageMode ? "当前栏复核状态" : "复核状态",reviewStatus);
-  reviewFilter.hidden = packageMode && model.stage==="final";
-  toolbar.append(labelled(contractLabel,contract),labelled("风险类型",scope),reviewFilter);
-  if (changeStatus) toolbar.append(labelled("改动状态",changeStatus));
+  toolbar.append(labelled(contractLabel,contract),labelled("风险类型",scope),labelled("复核状态",reviewStatus));
   toolbar.append(labelled("搜索",search),labelled("联动滚动",sync));
   const study = node("main",null,hasLawyerPane ? "study with-lawyer" : "study");
   for (const [side,label] of [["left","合同原文"],["right","实习生标注与复核"]]) {
@@ -4843,15 +4846,13 @@ function launch() {
     heading.append(node("h2",label));
     if (side === "right") {
       const tools = node("span",null,"toolbar-line");
-      const match = node("span",null,"small");
-      match.id = "match";
-      tools.append(match);
-      if (!packageMode || model.stage==="student") tools.append(reviewProgressLabel());
-      if (model.stage === "student") {
-        const commands = [button(packageMode ? "确认所有未复核的标注" : "确认当前筛选的风险卡",confirmCurrent)];
-        if (!packageMode) commands.unshift(button("新增全文缺失风险",()=>addAnnotation(null)));
-        if (packageMode) tools.append(packageMenu("操作", [...commands,button("提出合同问题",()=>editDiscussion("question"))]));
-        else tools.append(...commands);
+      if (packageMode) tools.append(reviewListCountLabel("student"),reviewProgressLabel("student"));
+      else {
+        const match = node("span",null,"small");
+        match.id = "match";
+        tools.append(match,reviewProgressLabel());
+        if (model.stage==="student") tools.append(button("新增全文缺失风险",()=>addAnnotation(null)),
+          button("确认当前筛选的风险卡",confirmCurrent));
       }
       heading.append(tools);
     }
@@ -4872,21 +4873,12 @@ function launch() {
     const heading = node("div",null,"pane-heading");
     heading.append(node("h2","律师复核"));
     const tools = node("div",null,"toolbar-line");
-    if (packageMode) {
-      const match = node("span",null,"small");
-      match.id = "lawyer-match";
-      tools.append(match);
-      if (model.stage!=="student") tools.append(reviewProgressLabel());
-    }
-    if (model.stage === "lawyer") {
-      const commands = [button(packageMode ? "确认所有未复核的标注" : "确认当前筛选的风险卡",confirmCurrent)];
-      if (!packageMode) commands.unshift(button("新增全文缺失风险",()=>addAnnotation(null)));
-      if (packageMode) tools.append(packageMenu("操作",commands));
-      else {
-        const add = button("新增风险批注",addLawyerAnnotation);
-        add.onpointerdown = event => { if (selectedClauseEvidence()) event.preventDefault(); };
-        tools.append(add,...commands,button("新建建议",()=>editDiscussion("suggestion")),button("复核记录",showLogs));
-      }
+    if (packageMode) tools.append(reviewListCountLabel("lawyer"),reviewProgressLabel("lawyer"));
+    else if (model.stage==="lawyer") {
+      const add = button("新增风险批注",addLawyerAnnotation);
+      add.onpointerdown = event => { if (selectedClauseEvidence()) event.preventDefault(); };
+      tools.append(add,button("新增全文缺失风险",()=>addAnnotation(null)),
+        button("确认当前筛选的风险卡",confirmCurrent),button("新建建议",()=>editDiscussion("suggestion")),button("复核记录",showLogs));
     }
     if (tools.children.length) heading.append(tools);
     const scroller = node("div",null,"scroller");
@@ -4908,13 +4900,13 @@ function launch() {
   resize.observe(byId("left"));
   resize.observe(byId("right"));
   if (packageMode) resize.observe(byId("lawyer-pane"));
-  const filters = [contract,scope,reviewStatus,changeStatus,search].filter(Boolean);
+  const filters = [contract,scope,reviewStatus,search];
   for (const input of filters) input.addEventListener(input===search ? "input" : "change",() => {
     if (openEditor) {
       input.value = input.dataset.past || "";
       return setNotice("请先应用或取消当前编辑，再切换筛选。");
     }
-    const keepScroll = input===changeStatus;
+    const keepScroll = packageMode && input===reviewStatus;
     if (keepScroll) {
       for (const role of [...packageDetailPages.keys()]) closePackageDetail(role);
       input.focus({preventScroll:true});
